@@ -21,6 +21,10 @@ from __future__ import print_function
 from bcc import BPF
 from collections import defaultdict
 from time import strftime
+from db_modules import write2db
+from datetime import datetime
+from init_db import influx_client
+from const import DatabaseType
 
 import argparse
 import curses
@@ -29,13 +33,6 @@ import re
 import signal
 from time import sleep
 
-
-# for influxdb
-from init_db import influx_client
-from const import DatabaseType
-from db_modules import write2db
-
-from datetime import datetime
 FIELDS = (
     "PID",
     "UID",
@@ -64,31 +61,6 @@ def get_meminfo():
         v = k[1].split()
         result[k[0]] = int(v[0])
     return result
-
-# data structure from template
-class lmp_data(object):
-    def __init__(self,a,b,c,d,e,f,g,h,i,j,k,l):
-            self.time = a
-            self.glob = b
-            self.buffers = c
-            self.cached = d
-            self.pid = e
-            self.uid = f
-            self.cmd = g
-            self.hits = h
-            self.misses = i
-            self.dirties = j
-            self.readhit = k
-            self.writehit = l
-
-            
-            
-                    
-data_struct = {"measurement":'cachetop',
-               "time":[],
-               "tags":['glob',],
-               "fields":['time','buffers','cached','pid','uid','cmd','hits','misses','dirties','readhit','writehit']}
-
 
 
 def get_processes_stats(
@@ -162,120 +134,128 @@ def get_processes_stats(
     counts.clear()
     return stats_list
 
+# data structure from template
+class lmp_data(object):
+    def __init__(self,a,b,c,d,e,f,g,h,i,j):
+            self.time = a
+            self.glob = b
+            self.pid = c
+            self.uid = d
+            self.cmd = e
+            self.hits = f
+            self.misses = g
+            self.DIRTIES = h
+            self.READ_HIT = i
+            self.WRITE_HIT = j
+            
+                    
+data_struct = {"measurement":'cachetop',
+               "time":[],
+               "tags":['glob',],
+               "fields":['time','pid','uid','cmd','hits','misses','DIRTIES','READ_HIT','WRITE_HIT']}
 
-def handle_loop(stdscr, args):
-    # don't wait on key press
-    stdscr.nodelay(1)
-    # set default sorting field
-    sort_field = FIELDS.index(DEFAULT_FIELD)
-    sort_reverse = True
+# load BPF program
+bpf_text = """
 
-    # load BPF program
-    bpf_text = """
+#include <uapi/linux/ptrace.h>
+struct key_t {
+    u64 ip;
+    u32 pid;
+    u32 uid;
+    char comm[16];
+};
 
-    #include <uapi/linux/ptrace.h>
-    struct key_t {
-        u64 ip;
-        u32 pid;
-        u32 uid;
-        char comm[16];
-    };
+BPF_HASH(counts, struct key_t);
 
-    BPF_HASH(counts, struct key_t);
+int do_count(struct pt_regs *ctx) {
+    struct key_t key = {};
+    u64 pid = bpf_get_current_pid_tgid();
+    u32 uid = bpf_get_current_uid_gid();
 
-    int do_count(struct pt_regs *ctx) {
-        struct key_t key = {};
-        u64 pid = bpf_get_current_pid_tgid();
-        u32 uid = bpf_get_current_uid_gid();
+    key.ip = PT_REGS_IP(ctx);
+    key.pid = pid >> 32;
+    key.uid = uid;
+    bpf_get_current_comm(&(key.comm), 16);
 
-        key.ip = PT_REGS_IP(ctx);
-        key.pid = pid & 0xFFFFFFFF;
-        key.uid = uid & 0xFFFFFFFF;
-        bpf_get_current_comm(&(key.comm), 16);
+    counts.increment(key);
+    return 0;
+}
 
-        counts.increment(key);
-        return 0;
-    }
+"""
+b = BPF(text=bpf_text)
+b.attach_kprobe(event="add_to_page_cache_lru", fn_name="do_count")
+b.attach_kprobe(event="mark_page_accessed", fn_name="do_count")
+b.attach_kprobe(event="account_page_dirtied", fn_name="do_count")
+b.attach_kprobe(event="mark_buffer_dirty", fn_name="do_count")
+exiting = 0
+while 1:
+    # s = stdscr.getch()
+    # if s == ord('q'):
+    #     exiting = 1
+    # elif s == ord('r'):
+    #     sort_reverse = not sort_reverse
+    # elif s == ord('<'):
+    #     sort_field = max(0, sort_field - 1)
+    # elif s == ord('>'):
+    #     sort_field = min(len(FIELDS) - 1, sort_field + 1)
+    # try:
+    #     sleep(args.interval)
+    # except KeyboardInterrupt:
+    #     exiting = 1
+    #     # as cleanup can take many seconds, trap Ctrl-C:
+    #     signal.signal(signal.SIGINT, signal_ignore)
 
-    """
-    b = BPF(text=bpf_text)
-    b.attach_kprobe(event="add_to_page_cache_lru", fn_name="do_count")
-    b.attach_kprobe(event="mark_page_accessed", fn_name="do_count")
-    b.attach_kprobe(event="account_page_dirtied", fn_name="do_count")
-    b.attach_kprobe(event="mark_buffer_dirty", fn_name="do_count")
-
-    exiting = 0
-
-    while 1:
-        s = stdscr.getch()
-        if s == ord('q'):
-            exiting = 1
-        elif s == ord('r'):
-            sort_reverse = not sort_reverse
-        elif s == ord('<'):
-            sort_field = max(0, sort_field - 1)
-        elif s == ord('>'):
-            sort_field = min(len(FIELDS) - 1, sort_field + 1)
-        try:
-            sleep(args.interval)
-        except KeyboardInterrupt:
-            exiting = 1
-            # as cleanup can take many seconds, trap Ctrl-C:
-            signal.signal(signal.SIGINT, signal_ignore)
-
-        # Get memory info
-        mem = get_meminfo()
-        cached = int(mem["Cached"]) / 1024
-        buff = int(mem["Buffers"]) / 1024
-
-        process_stats = get_processes_stats(
-            b,
-            sort_field=sort_field,
-            sort_reverse=sort_reverse)
-        stdscr.clear()
-        stdscr.addstr(
-            0, 0,
-            "%-8s Buffers MB: %.0f / Cached MB: %.0f "
-            "/ Sort: %s / Order: %s" % (
-                strftime("%H:%M:%S"), buff, cached, FIELDS[sort_field],
-                sort_reverse and "descending" or "ascending"
-            )
+    # Get memory info
+    mem = get_meminfo()
+    cached = int(mem["Cached"]) / 1024
+    buff = int(mem["Buffers"]) / 1024
+    process_stats = get_processes_stats(
+        b,
+        # 
         )
+    
+    # stdscr.addstr(
+    #     0, 0,
+    #     "%-8s Buffers MB: %.0f / Cached MB: %.0f "
+    #     "/ Sort: %s / Order: %s" % (
+    #         strftime("%H:%M:%S"), buff, cached, FIELDS[sort_field],
+    #         sort_reverse and "descending" or "ascending"
+    #     )
+    # )
+    # header
+    # stdscr.addstr(
+    #     1, 0,
+    #     "{0:8} {1:8} {2:16} {3:8} {4:8} {5:8} {6:10} {7:10}".format(
+    #         *FIELDS
+    #     ),
         
-        test_data = lmp_data(datetime.now().isoformat(),'glob', buff, cached, int(_pid),uid,comm,access,misses,mbd,rhits,whits)
-        write2db(data_struct, test_data, influx_client, DatabaseType.INFLUXDB.value)
-        # header
-        stdscr.addstr(
-            1, 0,
-            "{0:8} {1:8} {2:16} {3:8} {4:8} {5:8} {6:10} {7:10}".format(
-                *FIELDS
-            ),
-            curses.A_REVERSE
-        )
-        (height, width) = stdscr.getmaxyx()
-        for i, stat in enumerate(process_stats):
-            uid = int(stat[1])
-            try:
-                username = pwd.getpwuid(uid)[0]
-            except KeyError:
-                # `pwd` throws a KeyError if the user cannot be found. This can
-                # happen e.g. when the process is running in a cgroup that has
-                # different users from the host.
-                username = 'UNKNOWN({})'.format(uid)
-
-            stdscr.addstr(
-                i + 2, 0,
-                "{0:8} {username:8.8} {2:16} {3:8} {4:8} "
-                "{5:8} {6:9.1f}% {7:9.1f}%".format(
-                    *stat, username=username
-                )
-            )
-            if i > height - 4:
-                break
-        stdscr.refresh()
-        if exiting:
-            print("Detaching...")
-            return
+    # )
+    
+    for i, stat in enumerate(process_stats):
+        uid = int(stat[1])
+        try:
+            username = pwd.getpwuid(uid)[0]
+            # print(datetime.now().isoformat(),'glob',stat[0], username, stat[2],stat[3],stat[4],stat[5],stat[6],stat[7])
+            test_data = lmp_data(datetime.now().isoformat(),'glob',stat[0], username, stat[2],stat[3],stat[4],stat[5],float(stat[6]),float(stat[7]))
+            write2db(data_struct, test_data, influx_client, DatabaseType.INFLUXDB.value)
+        except KeyError:
+            # `pwd` throws a KeyError if the user cannot be found. This can
+            # happen e.g. when the process is running in a cgroup that has
+            # different users from the host.
+            username = 'UNKNOWN({})'.format(uid)
+        # stdscr.addstr(
+        #     i + 2, 0,
+        #     "{0:8} {username:8.8} {2:16} {3:8} {4:8} "
+        #     "{5:8} {6:9.1f}% {7:9.1f}%".format(
+        #         *stat, username=username
+        #     )
+        # )
+        # if i > height - 4:
+        #     break
+    
+    # if exiting:
+    #     print("Detaching...")
+    #     return
 
 
 def parse_arguments():
@@ -292,4 +272,4 @@ def parse_arguments():
     return args
 
 args = parse_arguments()
-curses.wrapper(handle_loop, args)
+

@@ -3,7 +3,7 @@ module lmp/eTrafficManager
 go 1.20
 
 require (
-	github.com/cilium/cilium v1.14.14
+	github.com/cilium/cilium v1.14.16
 	github.com/cilium/ebpf v0.11.0
 	github.com/prometheus/client_golang v1.16.0
 	github.com/prometheus/common v0.42.0

@@ -182,7 +182,7 @@
     "cors": "^2.8.5",
     "express": "^4.20.0",
     "http-proxy": "^1.18.1",
-    "http-proxy-middleware": "^2.0.6",
+    "http-proxy-middleware": "^2.0.7",
     "open": "^8.4.2",
     "source-map-support": "^0.5.21",
     "transformer-proxy": "^0.3.5",

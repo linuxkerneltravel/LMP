@@ -33,7 +33,6 @@
 #include "memory/mem_watcher/procstat.skel.h"
 #include "memory/mem_watcher/sysstat.skel.h"
 #include "memory/mem_watcher/fraginfo.skel.h"
-#include "memory/mem_watcher/numafraginfo.skel.h"
 // #include "memleak.skel.h"
 #include "memory/mem_watcher/vmasnap.skel.h"
 #include "memory/mem_watcher/drsnoop.skel.h"
@@ -266,7 +265,8 @@ static struct env
     bool sysstat;        // 是否启用系统内存状态报告
     // bool memleak;        // 是否启用内核态/用户态内存泄漏检测
     bool fraginfo;       // 是否启用内存碎片信息
-	bool numafraginfo;
+	bool nodes;
+	bool zones;
     bool vmasnap;        // 是否启用虚拟内存区域信息
     bool drsnoop;
     bool kernel_trace;   // 是否启用内核态跟踪
@@ -286,7 +286,8 @@ static struct env
     .sysstat = false,      // 默认关闭系统内存状态报告
     // .memleak = false,      // 默认关闭内存泄漏检测
     .fraginfo = false,     // 默认关闭内存碎片信息
-	.numafraginfo=false,
+	.zones=false,
+	.nodes=false,
     .vmasnap = false,      // 默认关闭虚拟内存区域信息
     .drsnoop = false,
     .kernel_trace = true,  // 默认启用内核态跟踪
@@ -332,6 +333,8 @@ static const struct argp_option opts[] = {
 	{"fraginfo", 'f', 0, 0, "print fraginfo", 12},
 	{"interval", 'i', "INTERVAL", 0, "Print interval in seconds (default 1)"},
 	{"duration", 'd', "DURATION", 0, "Total duration in seconds to run (default 10)"},
+	{"nodes", 'j', 0, 0, "Print nodes info"},
+	{"zones", 'z', 0, 0, "Print zones info"},
 
 	{0, 0, 0, 0, "vmasnap:", 13},
 	{"vmasnap", 'v', 0, 0, "print vmasnap (虚拟内存区域信息)"},
@@ -342,9 +345,6 @@ static const struct argp_option opts[] = {
 
 	{0, 0, 0, 0, "oomkiller:", 15},  // 新增的 oomkiller 选项
 	{"oomkiller", 'o', 0, 0, "print oomkiller (内存不足时被杀死的进程信息)"},
-	{0, 0, 0, 0, "numafraginfo:", 16},
-	{"numafraginfo", 'N', 0, 0, "print numafraginfo"},
-	
 
 	{NULL, 'h', NULL, OPTION_HIDDEN, "show the full help"},
 	{0},
@@ -370,6 +370,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'f':
 		env.fraginfo = true;
+		break;
+	case 'j':
+		if(env.fraginfo)
+			env.nodes=true;
+		break;
+	case 'z':
+		if(env.fraginfo)
+			env.zones=true;
 		break;
 	case 'v':
 		env.vmasnap = true;
@@ -407,9 +415,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'd':
 		env.duration = atoi(arg);
 		break;
-	case 'N':
-		env.numafraginfo = true;
-		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
 	}
@@ -446,7 +451,6 @@ static int process_procstat(struct procstat_bpf *skel_procstat);
 static int process_sysstat(struct sysstat_bpf *skel_sysstat);
 // static int process_memleak(struct memleak_bpf *skel_memleak, struct env);
 static int process_fraginfo(struct fraginfo_bpf *skel_fraginfo);
-static int process_numafraginfo(struct numafraginfo_bpf *skel_numafraginfo);
 static int process_vmasnap(struct vmasnap_bpf *skel_vmasnap);
 static int process_drsnoop(struct drsnoop_bpf *skel_drsnoop);
 static int process_oomkiller(struct oomkiller_bpf *skel_oomkiller);  // 新增的oomkiller处理函数原型
@@ -467,7 +471,6 @@ int main(int argc, char **argv)
     struct sysstat_bpf *skel_sysstat;
     // struct memleak_bpf *skel_memleak;
     struct fraginfo_bpf *skel_fraginfo;
-	struct numafraginfo_bpf *skel_numafraginfo;
     struct vmasnap_bpf *skel_vmasnap;
     struct oomkiller_bpf *skel_oomkiller;
     struct drsnoop_bpf *skel_drsnoop;
@@ -497,9 +500,6 @@ int main(int argc, char **argv)
     {
         PROCESS_SKEL(skel_fraginfo, fraginfo);
     }
-	else if(env.numafraginfo){
-		PROCESS_SKEL(skel_numafraginfo, numafraginfo);
-	}
     else if (env.vmasnap)
     {
         PROCESS_SKEL(skel_vmasnap, vmasnap);
@@ -1495,51 +1495,31 @@ static int process_fraginfo(struct fraginfo_bpf *skel_fraginfo)
 	while (1)
 	{
 		sleep(env.interval);
-		print_nodes(bpf_map__fd(skel_fraginfo->maps.nodes));
+		if(env.zones){
+			print_zones(bpf_map__fd(skel_fraginfo->maps.zones));
+			printf("\n");
+			break;
+		}else if(env.nodes){
+			print_nodes(bpf_map__fd(skel_fraginfo->maps.nodes));
+			printf("\n");
+			break;
+		}else{
+			print_orders(bpf_map__fd(skel_fraginfo->maps.orders));
 		printf("\n");
-		print_zones(bpf_map__fd(skel_fraginfo->maps.zones));
-		printf("\n");
-		print_orders(bpf_map__fd(skel_fraginfo->maps.orders));
-		printf("\n");
+		break;
+		}
+		
+		// print_zones(bpf_map__fd(skel_fraginfo->maps.zones));
+		// printf("\n");
+		// print_orders(bpf_map__fd(skel_fraginfo->maps.orders));
+		// printf("\n");
 	}
 
 fraginfo_cleanup:
 	fraginfo_bpf__destroy(skel_fraginfo);
 	return -err;
 }
-// =========================================numafraginfo=================================================
-static int process_numafraginfo(struct numafraginfo_bpf *skel_numafraginfo)
-{
 
-	int err = numafraginfo_bpf__load(skel_numafraginfo);
-	if (err)
-	{
-		fprintf(stderr, "Failed to load and verify BPF skeleton\n");
-		goto numafraginfo_cleanup;
-	}
-
-	err = numafraginfo_bpf__attach(skel_numafraginfo);
-	if (err)
-	{
-		fprintf(stderr, "Failed to attach BPF skeleton\n");
-		goto numafraginfo_cleanup;
-	}
-	while (1)
-	{
-		sleep(env.interval);
-		print_nodes(bpf_map__fd(skel_numafraginfo->maps.nodes));
-		printf("\n");
-		print_zones(bpf_map__fd(skel_numafraginfo->maps.zones));
-		printf("\n");
-		print_orders(bpf_map__fd(skel_numafraginfo->maps.orders));
-		printf("\n");
-		break;
-	}
-
-numafraginfo_cleanup:
-	numafraginfo_bpf__destroy(skel_numafraginfo);
-	return -err;
-}
 
 // ================================================== vmasnap ====================================================================
 static void print_find_event_data(int map_fd)

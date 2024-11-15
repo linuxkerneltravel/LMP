@@ -467,13 +467,21 @@ static int di_read(const char *path, char *buf, size_t size, off_t offset, struc
     if (offset >= file_size)
         return 0;
 
+    // 针对小文件优化
+    if (file_size <= CHUNK_SIZE)
+    {
+        // 如果文件小于一个数据块的大小，直接读取
+        memcpy(buf, inode->data_pointer->data + offset, size);
+        return size;
+    }
+
     if (offset + size > file_size)
         size = file_size - offset;
 
     size_t bytes_read = 0;
     struct dfs_data *data_block = inode->data_pointer;
 
-    // 遍历数据块，处理偏移和读取
+    // 偏移量小于数据块大小，提前加载后续数据块
     while (data_block != NULL && bytes_read < size)
     {
         if (offset >= CHUNK_SIZE)
@@ -489,8 +497,13 @@ static int di_read(const char *path, char *buf, size_t size, off_t offset, struc
 
         memcpy(buf + bytes_read, data_block->data + offset, to_read);
         bytes_read += to_read;
-        offset = 0;  // 只有第一个块需要处理 offset，之后的块直接从头开始
+        offset = 0;
 
+        if (data_block->next == NULL && bytes_read < size)
+        {
+            struct dfs_data *next_block = allocate_data_block();
+            data_block->next = next_block;
+        }
         data_block = data_block->next;
     }
 
@@ -518,34 +531,47 @@ static int di_write(const char *path, const char *buf, size_t size, off_t offset
     size_t bytes_written = 0;
     size_t total_offset = offset;
 
-    while (data_block != NULL && total_offset >= CHUNK_SIZE)
+    // 针对小文件优化
+    if (inode->size <= CHUNK_SIZE)
     {
-        total_offset -= CHUNK_SIZE;
-        if (data_block->next == NULL)
-        {
-            data_block->next = allocate_data_block();
-        }
-        data_block = data_block->next;
-    }
-
-    while (bytes_written < size)
-    {
-        size_t space_in_block = CHUNK_SIZE - total_offset;
-        size_t to_write = size - bytes_written;
-
-        if (to_write > space_in_block) to_write = space_in_block;
-
-        memcpy(data_block->data + total_offset, buf + bytes_written, to_write);
-
+        // 如果文件小于一个数据块，直接写入
+        memcpy(data_block->data + total_offset, buf + bytes_written, size);
+        bytes_written = size;
         total_offset = 0;
-        bytes_written += to_write;
-        data_block->size += to_write;
-
-        if (bytes_written < size && data_block->next == NULL)
+        data_block->size += size;
+    }
+    else
+    {
+        // 写入过程中分配更多的数据块
+        while (data_block != NULL && total_offset >= CHUNK_SIZE)
         {
-            data_block->next = allocate_data_block();
+            total_offset -= CHUNK_SIZE;
+            if (data_block->next == NULL)
+            {
+                data_block->next = allocate_data_block();
+            }
+            data_block = data_block->next;
         }
-        data_block = data_block->next;
+
+        while (bytes_written < size)
+        {
+            size_t space_in_block = CHUNK_SIZE - total_offset;
+            size_t to_write = size - bytes_written;
+
+            if (to_write > space_in_block) to_write = space_in_block;
+
+            memcpy(data_block->data + total_offset, buf + bytes_written, to_write);
+
+            total_offset = 0;
+            bytes_written += to_write;
+            data_block->size += to_write;
+
+            if (bytes_written < size && data_block->next == NULL)
+            {
+                data_block->next = allocate_data_block();
+            }
+            data_block = data_block->next;
+        }
     }
 
     if (offset + bytes_written > inode->size)
@@ -555,6 +581,7 @@ static int di_write(const char *path, const char *buf, size_t size, off_t offset
 
     return bytes_written;
 }
+
 
 
 static void *di_init(struct fuse_conn_info *conn, struct fuse_config *cfg)

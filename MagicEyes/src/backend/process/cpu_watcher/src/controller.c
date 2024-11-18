@@ -43,7 +43,7 @@ static struct env {
     bool mutex_detail;
     bool umutex;
 } env = {
-    .usemode = 0,
+    .usemode = 1,
     .SAR = false,
     .percent = false,
     .CS_DELAY = false,

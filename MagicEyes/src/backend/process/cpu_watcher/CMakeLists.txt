@@ -53,14 +53,14 @@ foreach (app ${apps})
                 ${CMAKE_SOURCE_DIR}/blazesym/target/release/libblazesym.a -lpthread -lrt -ldl)
     endif()
 endforeach ()
-# 8.controller链接到libbpf库
+# 8.controller链接到
 target_link_libraries(${CONTROLLER_NAME} PRIVATE ${LIBBPF_LIBRARIES} pthread rt dl)
 target_link_libraries(${CONTROLLER_NAME} PRIVATE elf z)
 
-# 9.将可执行文件，配置文件等安装在对应的位置
-# 9.1设置安装目录
+# 将可执行文件，配置文件等安装在对应的位置
+# 设置安装目录
 set(CPU_WATCHER_INSTALL_DIR backend/${TOOL_BELONG_TO_MODULE}/${TOOL_NAME})
-# 9.2安装可执行文件到 ${CPU_WATCHER_INSTALL_DIR}/bin
+# 安装可执行文件到 ${CPU_WATCHER_INSTALL_DIR}/bin
 install(TARGETS ${TOOL_NAME}
         RUNTIME DESTINATION ${CPU_WATCHER_INSTALL_DIR}/bin)
 install(TARGETS ${CONTROLLER_NAME}

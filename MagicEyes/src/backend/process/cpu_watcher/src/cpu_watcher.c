@@ -822,7 +822,7 @@ int main(int argc, char **argv)
 			goto cs_delay_cleanup;
 		}
 		csmap_fd = bpf_map__fd(cs_ctrl_map);
-		struct cs_ctrl init_value = {false,CS_WACTHER};
+		struct cs_ctrl init_value = {true,CS_WACTHER};
 		err = bpf_map_update_elem(csmap_fd, &key, &init_value, 0);
 		if(err < 0){
 			fprintf(stderr, "Failed to update elem\n");
@@ -860,7 +860,7 @@ int main(int argc, char **argv)
 			goto preempt_cleanup;
 		}
 		preemptmap_fd = bpf_map__fd(preempt_ctrl_map);
-		struct preempt_ctrl init_value = {false,PREEMPT_WACTHER};
+		struct preempt_ctrl init_value = {true,PREEMPT_WACTHER};
 		err = bpf_map_update_elem(preemptmap_fd, &key, &init_value, 0);
 		if(err < 0){
 			fprintf(stderr, "Failed to update elem\n");
@@ -898,7 +898,7 @@ int main(int argc, char **argv)
 			goto sc_delay_cleanup;
 		}
 		scmap_fd = bpf_map__fd(sc_ctrl_map);
-		struct sc_ctrl init_value = {false,SC_WACTHER};
+		struct sc_ctrl init_value = {true,SC_WACTHER};
 		err = bpf_map_update_elem(scmap_fd, &key, &init_value, 0);
 		if(err < 0){
 			fprintf(stderr, "Failed to update elem\n");
@@ -938,7 +938,7 @@ int main(int argc, char **argv)
 			goto schedule_cleanup;
 		}
 		schedulemap_fd = bpf_map__fd(schedule_ctrl_map);
-		struct schedule_ctrl init_value = {false,false,10000,SCHEDULE_WACTHER};
+		struct schedule_ctrl init_value = {true,false,10000,SCHEDULE_WACTHER};
 
 		err = bpf_map_update_elem(schedulemap_fd, &key, &init_value, 0);
 		if(err < 0){
@@ -977,7 +977,7 @@ int main(int argc, char **argv)
 			goto sar_cleanup;
 		}
 		sarmap_fd = bpf_map__fd(sar_ctrl_map);
-		struct sar_ctrl init_value = {false,false,SAR_WACTHER};
+		struct sar_ctrl init_value = {true,false,SAR_WACTHER};
 		err = bpf_map_update_elem(sarmap_fd, &key, &init_value, 0);
 		if(err < 0){
 			fprintf(stderr, "Failed to update elem\n");
@@ -1011,7 +1011,7 @@ int main(int argc, char **argv)
 			goto mq_delay_cleanup;
 		}
 		mqmap_fd = bpf_map__fd(mq_ctrl_map);
-		struct mq_ctrl init_value = {false,MQ_WACTHER};
+		struct mq_ctrl init_value = {true,MQ_WACTHER};
 		err = bpf_map_update_elem(mqmap_fd, &key, &init_value, 0);
 		if(err < 0){
 			fprintf(stderr, "Failed to update elem\n");
@@ -1049,7 +1049,7 @@ int main(int argc, char **argv)
 			goto mutrace_cleanup;
 		}
 		mumap_fd = bpf_map__fd(mu_ctrl_map);
-		struct mu_ctrl init_value = {false,false,false,MUTEX_WATCHER};
+		struct mu_ctrl init_value = {true,false,false,MUTEX_WATCHER};
 
 		err = bpf_map_update_elem(mumap_fd, &key, &init_value, 0);
 		if(err < 0){

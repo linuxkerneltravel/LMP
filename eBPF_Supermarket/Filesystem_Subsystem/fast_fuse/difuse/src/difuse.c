@@ -13,11 +13,9 @@
 
 #define FILE_TYPE 1
 #define DIRECTORY_TYPE 2
-#define MAX_INODES 1000  // 最大 inode 数量
+#define MAX_INODES 1000  //最大 inode 数量
 #define HASH_SIZE 1024
 #define CHUNK_SIZE 4096 // 数据块的大小
-#define PREFETCH_BLOCKS 4 // 预读的最大块数
-#define LRU_CACHE_SIZE 100 // LRU 缓存大小
 
 uint32_t next_ino = 1;
 
@@ -32,7 +30,6 @@ static struct dfs_data *allocate_data_block()
 {
     struct dfs_data *new_data = (struct dfs_data *)malloc(sizeof(struct dfs_data));
     new_data->data = (char *)malloc(CHUNK_SIZE);
-    new_data->size = 0;
     new_data->next = NULL;
     return new_data;
 }
@@ -47,7 +44,6 @@ struct dfs_inode
     time_t mtime;                       // 最后修改时间
     struct dfs_inode *prev;
     struct dfs_inode *next;
-    struct dfs_data *prefetch_cache;    // 预读缓存
 };
 
 
@@ -165,10 +161,10 @@ static struct dfs_inode *new_inode(int size, int dir_cnt)
         inode = (struct dfs_inode *)malloc(sizeof(struct dfs_inode));
         inode->ino = next_ino++;
     }
+
     inode->size = size;
     inode->dir_cnt = dir_cnt;
     inode->data_pointer = NULL;
-    inode->prefetch_cache = NULL;
     inode->prev = NULL;
     inode->next = NULL;
     return inode;
@@ -291,31 +287,6 @@ static void free_inode(struct dfs_inode *inode)
         data_block = next;
     }
     add_to_inode_recycle_list(inode);  // 将inode添加到回收队列
-}
-
-/* 预读机制 */
-static void prefetch_data(struct dfs_inode *inode, off_t offset, size_t size)
-{
-    if (!inode) return;
-
-    size_t prefetch_size = 0;
-    struct dfs_data *data_block = inode->prefetch_cache;
-
-    // 如果是顺序读取，预读多个数据块
-    while (data_block != NULL && prefetch_size < size && prefetch_size < PREFETCH_BLOCKS * CHUNK_SIZE)
-    {
-        prefetch_size += CHUNK_SIZE;
-        data_block = data_block->next;
-    }
-
-    // 如果预读缓存不足，则继续加载新的数据块
-    while (prefetch_size < size && data_block != NULL)
-    {
-        struct dfs_data *new_block = allocate_data_block();
-        inode->prefetch_cache = new_block;
-        prefetch_size += CHUNK_SIZE;
-        data_block = new_block->next;
-    }
 }
 
 
@@ -483,23 +454,26 @@ static int di_open(const char *path, struct fuse_file_info *fi)
 static int di_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     struct dfs_dentry *dentry = look_up(root, path);
-    if (dentry == NULL) return -ENOENT;
 
-    if (dentry->ftype != FILE_TYPE) return -EISDIR;
+    if (dentry == NULL)
+        return -ENOENT;
+
+    if (dentry->ftype != FILE_TYPE)
+        return -EISDIR;
 
     struct dfs_inode *inode = dentry->inode;
     size_t file_size = inode->size;
+
+    if (offset >= file_size)
+        return 0;
+
+    if (offset + size > file_size)
+        size = file_size - offset;
+
     size_t bytes_read = 0;
     struct dfs_data *data_block = inode->data_pointer;
 
-    if (offset >= file_size) return 0;
-
-    if (offset + size > file_size) size = file_size - offset;
-
-    // 进行预读操作
-    prefetch_data(inode, offset, size);
-
-    // 读取数据块
+    // 遍历数据块，处理偏移和读取
     while (data_block != NULL && bytes_read < size)
     {
         if (offset >= CHUNK_SIZE)
@@ -515,7 +489,7 @@ static int di_read(const char *path, char *buf, size_t size, off_t offset, struc
 
         memcpy(buf + bytes_read, data_block->data + offset, to_read);
         bytes_read += to_read;
-        offset = 0;  // 之后的块从头开始读取
+        offset = 0;  // 只有第一个块需要处理 offset，之后的块直接从头开始
 
         data_block = data_block->next;
     }
@@ -544,47 +518,34 @@ static int di_write(const char *path, const char *buf, size_t size, off_t offset
     size_t bytes_written = 0;
     size_t total_offset = offset;
 
-    // 针对小文件优化
-    if (inode->size <= CHUNK_SIZE)
+    while (data_block != NULL && total_offset >= CHUNK_SIZE)
     {
-        // 如果文件小于一个数据块，直接写入
-        memcpy(data_block->data + total_offset, buf + bytes_written, size);
-        bytes_written = size;
-        total_offset = 0;
-        data_block->size += size;
+        total_offset -= CHUNK_SIZE;
+        if (data_block->next == NULL)
+        {
+            data_block->next = allocate_data_block();
+        }
+        data_block = data_block->next;
     }
-    else
+
+    while (bytes_written < size)
     {
-        // 写入过程中分配更多的数据块
-        while (data_block != NULL && total_offset >= CHUNK_SIZE)
+        size_t space_in_block = CHUNK_SIZE - total_offset;
+        size_t to_write = size - bytes_written;
+
+        if (to_write > space_in_block) to_write = space_in_block;
+
+        memcpy(data_block->data + total_offset, buf + bytes_written, to_write);
+
+        total_offset = 0;
+        bytes_written += to_write;
+        data_block->size += to_write;
+
+        if (bytes_written < size && data_block->next == NULL)
         {
-            total_offset -= CHUNK_SIZE;
-            if (data_block->next == NULL)
-            {
-                data_block->next = allocate_data_block();
-            }
-            data_block = data_block->next;
+            data_block->next = allocate_data_block();
         }
-
-        while (bytes_written < size)
-        {
-            size_t space_in_block = CHUNK_SIZE - total_offset;
-            size_t to_write = size - bytes_written;
-
-            if (to_write > space_in_block) to_write = space_in_block;
-
-            memcpy(data_block->data + total_offset, buf + bytes_written, to_write);
-
-            total_offset = 0;
-            bytes_written += to_write;
-            data_block->size += to_write;
-
-            if (bytes_written < size && data_block->next == NULL)
-            {
-                data_block->next = allocate_data_block();
-            }
-            data_block = data_block->next;
-        }
+        data_block = data_block->next;
     }
 
     if (offset + bytes_written > inode->size)
@@ -594,7 +555,6 @@ static int di_write(const char *path, const char *buf, size_t size, off_t offset
 
     return bytes_written;
 }
-
 
 
 static void *di_init(struct fuse_conn_info *conn, struct fuse_config *cfg)

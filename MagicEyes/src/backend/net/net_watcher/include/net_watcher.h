@@ -55,6 +55,10 @@ typedef unsigned long long u64;
 #define MAX_STACK_DEPTH 128
 #define MAX_EVENTS 1024
 #define CACHEMAXSIZE 5
+#define PID 32
+#define NS(x) ((x) * 1000000000) // 1 秒等于 10^9 纳秒
+#define TIME_THRESHOLD_NS NS(10) 
+
 typedef u64 stack_trace_t[MAX_STACK_DEPTH];
 
 struct conn_t
@@ -270,6 +274,7 @@ static const char *protocol[] = {
     [2] = "ICMP",
     [3] = "UNKNOWN",
 };
+
 static const char *tcp_states[] = {
     [1] = "ESTABLISHED",
     [2] = "SYN_SENT",
@@ -285,9 +290,32 @@ static const char *tcp_states[] = {
     [12] = "NEW_SYN_RECV",
     [13] = "UNKNOWN",
 };
+
 struct LayerDelayInfo
 {
     float delay;     // 时延数据
     int layer_index; // 层索引
 };
+
+struct addr_pair
+{
+    u32 saddr;
+    u32 daddr;
+    u16 sport;
+    u16 dport;
+};
+struct tcp_rate
+{
+    struct addr_pair skbap;
+    u64 tcp_ato;
+    u64 tcp_rto;
+    u64 tcp_delack_max;
+    u32 pid;
+};
+
+struct tcp_args_s {
+    u64 sample_period; 
+};
+
+
 #endif /* __NET_WATCHER_H */

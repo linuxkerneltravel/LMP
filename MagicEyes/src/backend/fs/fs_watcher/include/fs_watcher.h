@@ -50,12 +50,15 @@ struct event_block_rq_issue {
 
 /*CacheTrack*/
 struct event_CacheTrack{
-    pid_t pid;
+    char comm[16];
     long long time; //耗时
-    // char name[32];          // 设备名称
     ino_t ino;             // inode 号
     unsigned long state;    // inode 状态
     unsigned long flags;    // inode 标志
+    long int nr_to_write;  // 待写回字节数
+    long unsigned int writeback_index; //写回操作的索引或序号
+    long unsigned int wrote; //已写回的字节数
+    long long time_complete;  // 写回开始时间
 };
 
 /*send pid to ebpf*/
@@ -63,3 +66,4 @@ struct dist_args {
     pid_t pid;
 };
 #endif /* __MEM_WATCHER_H */
+

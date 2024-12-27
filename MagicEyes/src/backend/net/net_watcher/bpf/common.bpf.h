@@ -256,6 +256,12 @@ struct
 {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
+} rate_rb SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
 } tcp_rb SEC(".maps");
 
 struct
@@ -431,6 +437,22 @@ struct
     __uint(max_entries, 1024); // 最大条目数
 } key_count SEC(".maps");
 
+struct
+{
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_COMM *MAX_PACKET);
+    __type(key, struct sock *);
+    __type(value, u64);
+} tcp_rate_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);     
+    __type(key, u32);                    
+    __type(value, struct tcp_args_s); 
+    __uint(max_entries, 1);           
+} args_map SEC(".maps");
+
+
 const volatile int filter_dport = 0;
 const volatile int filter_sport = 0;
 const volatile int all_conn = 0, err_packet = 0, extra_conn_info = 0,
@@ -438,7 +460,7 @@ const volatile int all_conn = 0, err_packet = 0, extra_conn_info = 0,
                    udp_info = 0, net_filter = 0, drop_reason = 0, icmp_info = 0,
                    tcp_info = 0, dns_info = 0, stack_info = 0, mysql_info = 0,
                    redis_info = 0, rtt_info = 0, rst_info = 0,
-                   protocol_count = 0, redis_stat = 0;
+                   protocol_count = 0, redis_stat = 0,overrun_time = 0;
 ;
 
 /* help macro */
@@ -734,6 +756,11 @@ static __always_inline u64 log2l(u64 v)
         return log2(hi) + 32;
     else
         return log2(v);
+}
+
+static __always_inline int get_current_tgid()
+{
+    return (int)(bpf_get_current_pid_tgid() >> PID);
 }
 
 /* help functions end */

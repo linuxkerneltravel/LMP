@@ -194,6 +194,14 @@ struct exit_value {
 struct container_id{
     char container_id[20];
 };
+//记录进程系统调用的详细信息
+#define MAX_SYSCALL_NUM 462
+struct syscall_value{
+    char container_id[20]; //容器ID
+    char proc_name[20]; //进程名
+    __u32 syscall_id_counts[MAX_SYSCALL_NUM];
+    __u64 syscall_total_delay[MAX_SYSCALL_NUM];
+};
 struct dirty_page_info {
     __u64 gfn;
     __u64 rel_gfn;

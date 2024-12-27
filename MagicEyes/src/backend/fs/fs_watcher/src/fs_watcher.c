@@ -171,7 +171,8 @@ static const struct argp argp = {
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format,
 			   va_list args)
 {
-	return vfprintf(stderr, format, args);
+	// return vfprintf(stderr, format, args);
+    return 0;
 }
 
 static volatile bool exiting = false;
@@ -198,7 +199,7 @@ static int process_CacheTrack(struct CacheTrack_bpf *skel_CacheTrack);
 
 
 int main(int argc,char **argv){
-    
+
     int err;
     struct open_bpf *skel_open;
     struct read_bpf *skel_read;
@@ -209,19 +210,19 @@ int main(int argc,char **argv){
 
 
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
-     
+
 
     /* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
-	
+
     /* Cleaner handling of Ctrl-C */
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
     signal(SIGALRM, sig_handler);
-   
+
 
     err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
-      printf("success!\n");
+    //   printf("success!\n");
     if (err)
         return err;
 
@@ -254,7 +255,7 @@ static int handle_event_open(void *ctx, void *data, size_t data_sz)
     char comm[TASK_COMM_LEN];
 	int i = 0;
     int map_fd = *(int *)ctx;//传递map得文件描述符
-    
+
 
 	for (; i < e->n_; ++i) {
 		snprintf(fd_path, sizeof(fd_path), "/proc/%d/fd/%d", e->pid_,
@@ -266,12 +267,12 @@ static int handle_event_open(void *ctx, void *data, size_t data_sz)
 			int result = strcmp(e->path_name_, actual_path);
 			if (result == 0) {
                 if(bpf_map_lookup_elem(map_fd,&e->pid_,&comm)==0){
-                    printf("get     ,   filename:%s    ,  fd:%d	, pid:%d  ,comm:%s\n",
+                    printf("%-60s %-8d %-8d %-8s\n",
 				       e->path_name_, i,e->pid_,comm);
                 }else{
                     fprintf(stderr, "Failed to lookup value for key %d\n", e->pid_);
                     }
-				
+
 			    }
 		    }
 	    }
@@ -290,7 +291,7 @@ static int handle_event_read(void *ctx, void *data, size_t data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	printf("%-8s  %-7d  %-7llu\n", ts, e->pid,e->duration_ns);
+	printf("%-10s %-8d %-8llu\n",ts,e->pid,e->duration_ns);
 	return 0;
 }
 
@@ -303,14 +304,14 @@ static int handle_event_write(void *ctx, void *data, size_t data_sz)
     time(&t);
     tm = localtime(&t);
     strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-	printf("ts:%-8s  pid:%-7ld inode_number:%-3ld  cout:%-3ld   real_count:%-3ld\n", ts, e->pid,e->inode_number,e->count,e->real_count);
+	printf("%-8s %-8ld %-8ld %-8ld %-8ld\n", ts, e->pid,e->inode_number,e->count,e->real_count);
     return 0;
 }
 
 static int handle_event_disk_io_visit(void *ctx, void *data,unsigned long data_sz) {
     const struct event_disk_io_visit *e = data;
 
-    printf("%-10llu %-9d %-7d %-4d %-7d %-16s\n",
+    printf("%-18llu %-7d %-7d %-4d %-7d %-16s\n",
            e->timestamp, e->blk_dev, e->sectors, e->rwbs, e->count, e->comm);
 
     return 0;
@@ -318,26 +319,40 @@ static int handle_event_disk_io_visit(void *ctx, void *data,unsigned long data_s
 
 static int handle_event_block_rq_issue(void *ctx, void *data,unsigned long data_sz) {
     const struct event_block_rq_issue *e = data;
-    printf("%-10llu %-9d %-7d %-4d %-16s Total I/O: %" PRIu64 "\n",
+    printf("%-18llu %-15d %-15d %-10d %-16s Total I/O: %" PRIu64 "\n",
            e->timestamp, e->dev, e->sector, e->nr_sectors, e->comm, e->total_io);
 
     return 0;
 }
 
-static int handle_event_CacheTrack(void *ctx, void *data,unsigned long data_sz) {
+static int handle_event_CacheTrack(void *ctx, void *data, unsigned long data_sz) {
     const struct event_CacheTrack *event = data;
-    printf("%-20lld %-19lu %-20lu %-5lu\n", event->time, event->ino, event->state, event->flags);
+
+    // 计算写回操作的耗时
+    long long writeback_duration = event->time_complete - event->time;
+
+    // 打印所有相关的信息
+    printf("%-19llu %-15s %-20lu %-5lu %-20ld %-20lu %-20llu %-20lld\n", 
+           event->ino,              // inode 号
+           event->comm,             //进程comm
+           event->state,            // inode 状态
+           event->flags,            // inode 标志
+           event->nr_to_write,      // 待写回字节数
+           event->writeback_index,  // 写回操作的索引或序号
+           event->wrote,            // 已写回的字节数
+           writeback_duration);     // 写回耗时
 
     return 0;
 }
 
+
 static int process_open(struct open_bpf *skel_open){
     int err;
     struct ring_buffer *rb;
-    
+
     LOAD_AND_ATTACH_SKELETON_MAP(skel_open,open);
 
-    printf("%-8s    %-8s    %-8s    %-8s\n","filenamename","fd","pid","comm");
+    printf("%-60s %-8s %-8s %-8s\n","filenamename","fd","pid","comm");
     POLL_RING_BUFFER(rb, 1000, err);
 
 open_cleanup:
@@ -350,10 +365,10 @@ open_cleanup:
 static int process_read(struct read_bpf *skel_read){
     int err;
     struct ring_buffer *rb;
-    
+
     LOAD_AND_ATTACH_SKELETON(skel_read,read);
 
-    printf("%-8s    %-8s    %-8s    %-8s\n","filename","fd","pid","ds");
+    printf("%-10s %-8s %-8s\n","TIME","PID","DS");
     POLL_RING_BUFFER(rb, 1000, err);
 
 read_cleanup:
@@ -369,6 +384,7 @@ static int process_write(struct write_bpf *skel_write){
     int arg_index = 0;
 
     struct dist_args d_args = {-1};
+
 
     LOAD_AND_ATTACH_SKELETON(skel_write,write);
 
@@ -394,7 +410,7 @@ write_cleanup:
 static int process_disk_io_visit(struct disk_io_visit_bpf *skel_disk_io_visit){
     int err;
     struct ring_buffer *rb;
-     
+
     LOAD_AND_ATTACH_SKELETON(skel_disk_io_visit,disk_io_visit);
     printf("%-18s %-7s %-7s %-4s %-7s %-16s\n","TIME", "DEV", "SECTOR", "RWBS", "COUNT", "COMM");
     POLL_RING_BUFFER(rb, 1000, err);
@@ -410,9 +426,9 @@ disk_io_visit_cleanup:
 static int process_block_rq_issue(struct block_rq_issue_bpf *skel_block_rq_issue){
     int err;
     struct ring_buffer *rb;
-     
+
     LOAD_AND_ATTACH_SKELETON(skel_block_rq_issue,block_rq_issue);
-    printf("%-18s %-7s %-7s %-4s %-16s %-5sn","TIME", "DEV", "SECTOR", "SECTORS","COMM","Total_Size");
+    printf("%-18s %-15s %-15s %-10s %-16s %-5s\n","TIME", "DEV", "SECTOR", "SECTORS","COMM","Total_Size");
     POLL_RING_BUFFER(rb, 1000, err);
 
 block_rq_issue_cleanup:
@@ -426,9 +442,19 @@ block_rq_issue_cleanup:
 static int process_CacheTrack(struct CacheTrack_bpf *skel_CacheTrack){
     int err;
     struct ring_buffer *rb;
-     
+
     LOAD_AND_ATTACH_SKELETON(skel_CacheTrack,CacheTrack);
-    printf("%-20s %-19s %-20s %-5s\n","TIME", "INO","STATE","FLAGS");
+    // 打印列标题说明（解释各列的含义）
+    printf("%-19s %-15s %-20s %-5s %-20s %-20s %-20s %-20s\n", 
+       "INODE",                // inode号
+       "COMM",                //comm进程名
+       "STATE",              // inode 状态
+       "FLAGS",              // inode 标志
+       "NR_TO_WRITE",        // 待写回字节数
+       "WRITEBACK_INDEX",    // 写回操作的索引或序号
+       "WROTE",              // 已写回字节数
+       "WRITEBACK_DURATION"); // 写回操作的耗时
+
     POLL_RING_BUFFER(rb, 1000, err);
 
 CacheTrack_cleanup:

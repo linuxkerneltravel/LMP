@@ -32,6 +32,7 @@
 #include "uprobe_helpers.h"
 #include "kvm_watcher.skel.h"
 
+
 //可视化调整输出格式
 int is_first = 1;
 // 创建并打开临时文件
@@ -332,7 +333,7 @@ static struct env {
     bool execute_container_syscall;
     int monitoring_time;
     pid_t vm_pid;
-    char hostname[64];
+    char hostname[13];
     enum EventType event_type;
 } env = {
     .execute_vcpu_wakeup = false,
@@ -363,7 +364,7 @@ int option_selected = 0;  // 功能标志变量,确保激活子功能
 // 具体解释命令行参数
 static const struct argp_option opts[] = {
     {"vcpu_wakeup", 'w', NULL, 0, "Monitoring the wakeup of vcpu."},
-    {"container_syscall", 'a', NULL, 0, "Monitoring the syscall of container."},
+    {"container_syscall", 'a', "container_id", 0, "Monitoring the syscall of container."},
     {"vcpu_load", 'o', NULL, 0, "Monitoring the load of vcpu."},
     {"vm_exit", 'e', NULL, 0,
      "Monitoring the event of vm exit(including exiting to KVM and user "
@@ -398,14 +399,13 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state) {
             env.show = true;
             break;
         case 'a':
-            SET_OPTION_AND_CHECK_USAGE(option_selected,
-                                       env.execute_container_syscall);
-            char hostname[64];
-            int result = gethostname(hostname, sizeof(hostname));
-            if (result == 0) {
-                strcpy(env.hostname, hostname);
+            SET_OPTION_AND_CHECK_USAGE(option_selected, env.execute_container_syscall);
+            if (arg != NULL) {
+                // 使用 strncpy 进行安全复制
+                strncpy(env.hostname, arg, sizeof(env.hostname) - 1);
+                env.hostname[sizeof(env.hostname) - 1] = '\0'; // 确保字符串以 '\0' 结尾
             } else {
-                perror("gethostname");
+                fprintf(stderr, "Error: hostname argument is NULL.\n");
             }
             break;
         case 'H':
@@ -785,10 +785,9 @@ static int print_event_head(struct env *env) {
             break;
         case CONTAINER_SYSCALL:
             if(env->show){
-                printf("%-9s %10s\n", "DELAY(us)","SYSCALLID");
+                //printf("%-13s %-10s %-10s %-10s %-10s %-10s\n","ContainerID", "Comm","Pid","SYSCALLID","Counts","avage_DELAY(us)");
             }else{
-                printf("%-8s %-22s %-9s %10s %-16s\n", "PID", "CONTAINER_ID",
-                "DELAY(us)", "SYSCALLID", "COMM");
+                //printf("%-13s %-10s %-10s %-10s %-10s %-10s\n","ContainerID", "Comm","Pid","SYSCALLID","Counts","avage_DELAY(us)");
             }
             break;
         case EXIT:
@@ -1027,6 +1026,7 @@ int print_hc_map(struct kvm_watcher_bpf *skel) {
     struct hc_key next_key = {};
     struct hc_value hc_value = {};
     int first_run = 1;
+    
     // Iterate over the map
     while (!bpf_map_get_next_key(fd, &lookup_key, &next_key)) {
         if (first_run) {
@@ -1238,6 +1238,100 @@ int print_exit_map(struct kvm_watcher_bpf *skel) {
     __print_exit_map(userspace_exit_fd, EXIT_USERSPACE_NR);
     return 0;
 }
+int memset_big_struct(struct kvm_watcher_bpf *skel){
+    //对占用大内存的结构体的map进行初始化
+    int fd_memset = bpf_map__fd(skel->maps.proc_syscall_info);
+    int fd_proc = bpf_map__fd(skel->maps.container_id_map);
+    pid_t pid ,next_pid;
+    while (!bpf_map_get_next_key(fd_proc, &pid, &next_pid)) {
+        struct syscall_value new_value = {};
+        int err = bpf_map_lookup_elem(fd_memset,&next_pid,&new_value);
+        //填充 new_value
+        strncpy(new_value.container_id, "", sizeof(new_value.container_id));
+        strncpy(new_value.proc_name, "", sizeof(new_value.proc_name));
+        // 初始化 syscalls 的 counts 和延迟为0
+        memset(new_value.syscall_id_counts, 0, sizeof(new_value.syscall_id_counts));
+        memset(new_value.syscall_total_delay, 0, sizeof(new_value.syscall_total_delay));
+        // 在 BPF map 中插入初始化的值
+        int ret = bpf_map_update_elem(fd_memset, &next_pid, &new_value, BPF_ANY);
+        if (ret < 0) {
+            perror("Error updating BPF map");
+            return -1;
+        }
+        pid = next_pid;
+    }
+    //清除记录容器pid的map,不然无法重新给系统调用信息的map赋值
+    memset(&pid, 0, sizeof(pid_t));
+    memset(&next_pid, 0, sizeof(pid_t));
+    while (!bpf_map_get_next_key(fd_proc, pid, next_pid)) {
+        int err = bpf_map_delete_elem(fd_proc, next_pid);
+        if (err < 0) {
+            fprintf(stderr, "failed to cleanup map: %d\n", err);
+            return -1;
+        }
+        pid = next_pid;
+    }
+    return 0;
+}
+int print_container_syscall(struct kvm_watcher_bpf *skel){
+    OUTPUT_INTERVAL(2);
+    memset_big_struct(skel);
+    OUTPUT_INTERVAL(5);
+    int fd = bpf_map__fd(skel->maps.proc_syscall_info);
+    int fd1 = bpf_map__fd(skel->maps.container_id_map);
+    struct syscall_value values;
+    pid_t lookup_key,next_key;
+    
+    int err ;
+    //打印表头
+    printf("%-13s %-10s %-10s %-10s %-10s %-10s\n","ContainerID", "Comm","Pid","SYSCALLID","Counts","avage_DELAY(us)");
+    while(!bpf_map_get_next_key(fd,&lookup_key,&next_key)){
+        err = bpf_map_lookup_elem(fd,&next_key,&values);
+        if (err < 0) {
+                fprintf(stderr, "failed to lookup values: %d\n", err);
+                return -1;
+        }
+        //找出最大的前五个系统调用号
+        int max[5] = {-1, -1, -1, -1, -1}; // 记录前五个最大值的下标
+        int top_values[5] = {0,0,0,0,0}; // 记录前五个最大值
+        for (int i = 0; i < 462; i++) {
+            for (int j = 0; j < 5; j++) {
+                if (values.syscall_id_counts[i] > top_values[j]) {
+                    // 将当前值插入到正确的位置，后面的值依次后移
+                    for (int k = 5 - 1; k > j; k--) {
+                        top_values[k] = top_values[k - 1];
+                        max[k] = max[k - 1];
+                    }
+                    top_values[j] = values.syscall_id_counts[i];
+                    max[j] = i;
+                    break;
+                }
+            }
+        }
+        for(int i = 0;i<5;i++){
+            if(max[i] == -1){
+                continue;
+            }
+            uint64_t result = values.syscall_total_delay[max[i]] / values.syscall_id_counts[max[i]];
+            printf("%-13s %-10s %-10d %-10d %-10d %llu\n",values.container_id,values.proc_name,next_key,
+                max[i],values.syscall_id_counts[max[i]],result); 
+        }
+        lookup_key = next_key;
+    }
+    memset(&lookup_key, 0, sizeof(pid_t));
+    memset(&next_key, 0, sizeof(pid_t));
+    while (!bpf_map_get_next_key(fd, lookup_key, next_key)) {
+        err = bpf_map_delete_elem(fd, next_key);
+        if (err < 0) {
+            fprintf(stderr, "failed to cleanup map: %d\n", err);
+            return -1;
+        }
+        lookup_key = next_key;
+    }
+    printf("--------------------------\n");
+    return 0;
+    
+}
 void print_map_and_check_error(int (*print_func)(struct kvm_watcher_bpf *),
                                struct kvm_watcher_bpf *skel,
                                const char *map_name, int err) {
@@ -1262,6 +1356,7 @@ int attach_probe(struct kvm_watcher_bpf *skel) {
     return kvm_watcher_bpf__attach(skel);
 }
 int main(int argc, char **argv) {
+
     // 定义一个环形缓冲区
     struct ring_buffer *rb = NULL;
     struct kvm_watcher_bpf *skel;
@@ -1325,6 +1420,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Please specify an option using %s.\n", OPTIONS_LIST);
         goto cleanup;
     }
+    //打印结果
     while (!exiting) {
         err = ring_buffer__poll(rb, RING_BUFFER_TIMEOUT_MS /* timeout, ms */);
         if (env.execute_hypercall) {
@@ -1339,6 +1435,10 @@ int main(int argc, char **argv) {
         if (env.execute_vcpu_load) {
             print_map_and_check_error(print_vcpu_load_map, skel, "vcpu_load",
                                       err);
+        }
+        if (env.execute_container_syscall){
+            //print_map_and_check_error(print_container_syscall,skel,"container_syscall",err);
+            print_container_syscall(skel);
         }
         /* Ctrl-C will cause -EINTR */
         if (err == -EINTR) {

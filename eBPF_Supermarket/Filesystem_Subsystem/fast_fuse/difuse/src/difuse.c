@@ -67,8 +67,35 @@ struct dfs_dentry *hash_table[HASH_SIZE];   //哈希表
 // inode回收队列
 struct dfs_inode *inode_recycle_list = NULL;  // inode 回收队列头
 
-/*缓存管理*/
+/*预读机制*/
+static void prefetch_data_block(struct dfs_inode *inode, off_t offset)
+{
+    struct dfs_data *data_block = inode->data_pointer;
 
+    if (offset >= inode->size)
+    {
+        return;
+    }
+
+    // 查找偏移量对应的块
+    while (data_block != NULL)
+    {
+        if (offset < CHUNK_SIZE)
+        {
+            // 预读下一个块
+            if (data_block->next == NULL)
+            {
+                // 如果当前块没有后续块，就分配新的块
+                data_block->next = allocate_data_block();
+            }
+            return;
+        }
+        offset -= CHUNK_SIZE;
+        data_block = data_block->next;
+    }
+}
+
+/*缓存管理*/
 static unsigned int hash(const char *path)
 {
     unsigned int hash = 0;
@@ -473,7 +500,9 @@ static int di_read(const char *path, char *buf, size_t size, off_t offset, struc
     size_t bytes_read = 0;
     struct dfs_data *data_block = inode->data_pointer;
 
-    // 遍历数据块，处理偏移和读取
+    // 预读当前文件数据块
+    prefetch_data_block(inode, offset);
+
     while (data_block != NULL && bytes_read < size)
     {
         if (offset >= CHUNK_SIZE)
@@ -496,7 +525,6 @@ static int di_read(const char *path, char *buf, size_t size, off_t offset, struc
 
     return bytes_read;
 }
-
 
 static int di_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {

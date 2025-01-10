@@ -54,7 +54,7 @@ static int all_conn = 0, err_packet = 0, extra_conn_info = 0, layer_time = 0,
            drop_reason = 0, addr_to_func = 0, icmp_info = 0, tcp_info = 0,
            time_load = 0, dns_info = 0, stack_info = 0, mysql_info = 0,
            redis_info = 0, count_info = 0, rtt_info = 0, rst_info = 0,
-           protocol_count = 0, redis_stat = 0; // flag
+           protocol_count = 0, redis_stat = 0, overrun_time = 0; // flag
 
 static const char argp_program_doc[] = "Watch tcp/ip in network subsystem \n";
 static const struct argp_option opts[] = {
@@ -88,8 +88,10 @@ static const struct argp_option opts[] = {
     {"rtt", 'T', 0, 0, "set to trace rtt"},
     {"rst_counters", 'U', 0, 0, "set to trace rst"},
     {"protocol_count", 'p', 0, 0, "set to trace protocol count"},
+    {"overrun_time", 'o', "PERIOD", 0, "set to trace rto overrun"},
+      // {"overrun", 'o', 0, 0, "set to trace rto overrun"},
     {}};
-
+static u64 sample_period = TIME_THRESHOLD_NS;
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
     char *end;
@@ -167,6 +169,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
     case 'C':
         count_info = strtoul(arg, &end, 10);
         break;
+    case 'o':
+        overrun_time = strtoul(arg, &end, 10);
+        break;
     default:
         return ARGP_ERR_UNKNOWN;
     }
@@ -195,6 +200,7 @@ enum MonitorMode
     MODE_RETRANS,
     MODE_CONN,
     MODE_ERROR,
+    MODE_OVERTIME,
     MODE_DEFAULT
 };
 enum MonitorMode get_monitor_mode()
@@ -262,6 +268,10 @@ enum MonitorMode get_monitor_mode()
     else if (err_packet)
     {
         return MODE_ERROR;
+    }
+    else if (overrun_time)
+    {
+        return MODE_OVERTIME;
     }
     else
     {
@@ -693,6 +703,8 @@ static void set_disable_load(struct net_watcher_bpf *skel)
                               rst_info ? true : false);
     bpf_program__set_autoload(skel->progs.handle_receive_reset,
                               rst_info ? true : false);
+    bpf_program__set_autoload(skel->progs.handle_tcp_rcv_space_adjust,
+                              overrun_time ? true : false);
 }
 static void print_header(enum MonitorMode mode)
 {
@@ -820,6 +832,13 @@ static void print_header(enum MonitorMode mode)
         printf("%-22s %-20s %-8s %-20s %-8s %-14s %-14s %-15s \n",
                "SOCK", "Saddr", "Sport", "Daddr", "Dport", "Seq", "Ack", "Reason");
         break;
+    case MODE_OVERTIME:
+        printf("==============================================================="
+               "=OVERTIME INFORMATION==================================================="
+               "======================\n");
+        printf("%-20s %-20s %-20s %-20s %-20s %-20s\n",
+               "Saddr", "Daddr", "Sport", "Dport", "RTO", "Delack_max");
+        break;
     case MODE_PROTOCOL_COUNT:
         printf("==============================================================="
                "=MODE_PROTOCOL_COUNT==========================================="
@@ -923,7 +942,7 @@ static int print_conns(struct net_watcher_bpf *skel)
 static int print_packet(void *ctx, void *packet_info, size_t size)
 {
     if (udp_info || net_filter || drop_reason || icmp_info || tcp_info || all_conn ||
-        dns_info || mysql_info || redis_info || rtt_info || protocol_count || redis_stat || extra_conn_info || retrans_info)
+        dns_info || mysql_info || redis_info || rtt_info || protocol_count || redis_stat || extra_conn_info || retrans_info || overrun_time)
         return 0;
     char http_data[256];
     const struct pack_t *pack_info = packet_info;
@@ -1313,7 +1332,7 @@ static void print_stored_events()
     char d_str[INET_ADDRSTRLEN];
     char saddr_v6[INET6_ADDRSTRLEN];
     char daddr_v6[INET6_ADDRSTRLEN];
-    
+
     for (int i = 0; i < event_count; i++)
     {
         struct reset_event_t *event = &event_store[i];
@@ -1364,7 +1383,7 @@ static void print_domain_name(const unsigned char *data, char *output)
             output[pos++] = *next++;
         }
     }
-    output[pos] = '\0'; 
+    output[pos] = '\0';
 }
 static int print_dns(void *ctx, void *packet_info, size_t size)
 {
@@ -1529,6 +1548,31 @@ static int print_trace(void *_ctx, void *data, size_t size)
     printf("\n");
     return 0;
 }
+
+static int print_rate(void *ctx, void *data, size_t size) {
+    if (!overrun_time) {
+        return 0;
+    }
+    char d_str[INET_ADDRSTRLEN];
+    char s_str[INET_ADDRSTRLEN];
+    const struct tcp_rate *pack_info = (const struct tcp_rate *)data;
+    unsigned int saddr = pack_info->skbap.saddr;
+    unsigned int daddr = pack_info->skbap.daddr;
+    if ((saddr & 0x0000FFFF) == 0x0000007F ||
+        (daddr & 0x0000FFFF) == 0x0000007F)
+        return 0;
+    if ((saddr & 0xFF000000) == 0x01000000 ||
+        (daddr & 0xFF000000) == 0x01000000)
+        return 0;
+    inet_ntop(AF_INET, &saddr, s_str, sizeof(s_str));
+    inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
+
+    printf("%-20s %-20s %-20d %-20d %-20lld %-20lld\n", s_str, d_str,
+           pack_info->skbap.sport, pack_info->skbap.dport, pack_info->tcp_rto,
+           pack_info->tcp_delack_max);
+
+    return 0;
+}
 static int print_rtt(void *ctx, void *data, size_t size)
 {
     if (!rtt_info)
@@ -1653,7 +1697,7 @@ void print_top_5_keys()
         }
     }
     printf("----------------------------\n");
-    
+
     printf("Top 5 Keys:\n");
     for (int i = 0; i < 5 && i < index; i++)
     {
@@ -1679,6 +1723,7 @@ int main(int argc, char **argv)
     struct ring_buffer *rtt_rb = NULL;
     struct ring_buffer *events = NULL;
     struct ring_buffer *port_rb = NULL;
+    struct ring_buffer *rate_rb = NULL;
     struct net_watcher_bpf *skel;
     int err;
     /* Parse command line arguments */
@@ -1688,8 +1733,8 @@ int main(int argc, char **argv)
         if (err)
             return err;
     }
-    
-   // libbpf_set_print(libbpf_print_fn);
+
+    // libbpf_set_print(libbpf_print_fn);
 
     /* Cleaner handling of Ctrl-C */
     signal(SIGINT, sig_handler);
@@ -1856,6 +1901,15 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to create ring buffer(trace)\n");
         goto cleanup;
     }
+
+    rate_rb = ring_buffer__new(bpf_map__fd(skel->maps.rate_rb),
+                               print_rate, NULL, NULL);
+    if (!rate_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(trace)\n");
+        goto cleanup;
+    }
     /* Set up ring buffer polling */
     rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), print_packet, NULL, NULL);
     if (!rb)
@@ -1885,6 +1939,7 @@ int main(int argc, char **argv)
         err = ring_buffer__poll(events, 100 /* timeout, ms */);
         err = ring_buffer__poll(port_rb, 100 /* timeout, ms */);
         err = ring_buffer__poll(redis_stat_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(rate_rb, 100 /* timeout, ms */);
         print_conns(skel);
         sleep(1);
         /* Ctrl-C will cause -EINTR */
@@ -1898,8 +1953,22 @@ int main(int argc, char **argv)
             printf("Error polling perf buffer: %d\n", err);
             break;
         }
-
         gettimeofday(&end, NULL);
+        if (overrun_time)
+        {
+            u32 key = 0;
+            struct tcp_args_s new_args;
+            new_args.sample_period = overrun_time;
+
+            // 更新 args_map，传递采样周期给 BPF 程序
+            err = bpf_map_update_elem(bpf_map__fd(skel->maps.args_map), &key, &new_args, BPF_ANY);
+            if (err)
+            {
+                fprintf(stderr, "Failed to update sample period\n");
+                return 1;
+            }
+        }
+
         if ((end.tv_sec - start.tv_sec) >= 5)
         {
             if (rst_info)
@@ -1941,6 +2010,7 @@ cleanup:
     ring_buffer__free(events);
     ring_buffer__free(port_rb);
     ring_buffer__free(redis_stat_rb);
+    ring_buffer__free(rate_rb);
     net_watcher_bpf__destroy(skel);
     return err < 0 ? -err : 0;
 }

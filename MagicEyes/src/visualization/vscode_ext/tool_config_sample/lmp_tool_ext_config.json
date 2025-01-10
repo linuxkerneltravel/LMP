@@ -36,6 +36,10 @@
             "description" : "Linux 文件子系统观测工具集",
             "tools" : [
                 {
+                    "name":"fs_watcher",
+                    "description":"文件系统观测"
+                },
+                {
                     "name": "fast_fuse",
                     "description" : "FUSE 性能优化"
                 }

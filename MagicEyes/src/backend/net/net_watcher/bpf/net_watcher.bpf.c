@@ -341,7 +341,7 @@ int BPF_UPROBE(redis_addReply) {
 // rtt
 SEC("kprobe/tcp_rcv_established")
 int BPF_KPROBE(tcp_rcv_established, struct sock *sk, struct sk_buff *skb) {
-    return __tcp_rcv_established(sk, skb);
+       return __tcp_rcv_established(sk, skb);
 }
 
 // tcpstate
@@ -349,7 +349,7 @@ SEC("tracepoint/sock/inet_sock_set_state")
 int handle_set_state(struct trace_event_raw_inet_sock_set_state *ctx) {
     return __handle_set_state(ctx);
 }
-// RST
+
 SEC("tracepoint/tcp/tcp_send_reset")
 int handle_send_reset(struct trace_event_raw_tcp_send_reset *ctx) {
     return __handle_send_reset(ctx);
@@ -358,4 +358,9 @@ int handle_send_reset(struct trace_event_raw_tcp_send_reset *ctx) {
 SEC("tracepoint/tcp/tcp_receive_reset")
 int handle_receive_reset(struct trace_event_raw_tcp_receive_reset *ctx) {
     return __handle_receive_reset(ctx);
+}
+
+SEC("raw_tracepoint/tcp_rcv_space_adjust")
+int handle_tcp_rcv_space_adjust(struct bpf_raw_tracepoint_args  *ctx) {
+    return __handle_tcp_rcv_space_adjust(ctx);
 }

@@ -6,10 +6,13 @@
 #define TASK_COMM_LEN 16
 
 struct event_open {
-	int pid_;
-	char path_name_[path_size];
-	int n_;
-    char comm[TASK_COMM_LEN];
+    pid_t pid;
+    int dfd;
+    char filename[path_size];
+    int flags;
+    int fd;    // 文件描述符
+    int ret;   // 系统调用返回值
+    bool is_created;  // 标记文件是否创建
 };
 
 /*read*/

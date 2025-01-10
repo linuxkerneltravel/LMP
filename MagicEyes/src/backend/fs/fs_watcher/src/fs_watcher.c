@@ -5,6 +5,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
@@ -14,6 +15,7 @@
 #include <inttypes.h>
 #include <linux/fs.h>
 #include <errno.h>
+#include <fcntl.h>  // 包含文件打开标志宏
 #include <argp.h>
 #include "fs/fs_watcher/open.skel.h"
 #include "fs/fs_watcher/read.skel.h"
@@ -105,7 +107,6 @@ static struct env{
     bool disk_io_visit;
     bool block_rq_issue;
     bool CacheTrack;
-    pid_t pid;
 }env = {
     .open = false,
     .read = false,
@@ -113,7 +114,6 @@ static struct env{
     .disk_io_visit = false,
     .block_rq_issue = false,
     .CacheTrack = false,
-    .pid = -1,
 };
 
 static const struct argp_option opts[] = {
@@ -123,7 +123,6 @@ static const struct argp_option opts[] = {
     {"disk_io_visit", 'd', 0, 0, "Print disk I/O visit report"},
     {"block_rq_issue", 'b', 0, 0, "Print block I/O request submission events. Reports when block I/O requests are submitted to device drivers."},
     {"CacheTrack", 't' , 0 ,0 , "WriteBack dirty lagency and other information"},
-    {"pid", 'p', "PID", 0, "Specify pid number when report weite. Only support for write report now"},
     {0} // 结束标记，用于指示选项列表的结束
 };
 
@@ -142,19 +141,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state) {
         env.block_rq_issue = true;break;
         case 't':
         env.CacheTrack = true;break;
-        case 'p':
-        if (arg) {
-            env.pid = atoi(arg);
-            if (env.pid <= 0) {
-                fprintf(stderr, "Invalid PID value: %s\n", arg);
-                argp_usage(state);
-            }
-        } else {
-            fprintf(stderr, "-p option requires an argument\n");
-            argp_usage(state);
-        }
-        break;
-        default:
+        default: 
             return ARGP_ERR_UNKNOWN;
     }
     return 0;
@@ -244,38 +231,65 @@ int main(int argc,char **argv){
     }
 }
 
+const char* flags_to_str(int flags) {
+    static char str[256];
+    str[0] = '\0';  // 清空字符串
+    
+    if (flags & O_RDONLY)   strcat(str, "O_RDONLY ");
+    if (flags & O_WRONLY)   strcat(str, "O_WRONLY ");
+    if (flags & O_RDWR)     strcat(str, "O_RDWR ");
+    if (flags & O_CREAT)    strcat(str, "O_CREAT ");
+    if (flags & O_EXCL)     strcat(str, "O_EXCL ");
+    if (flags & O_TRUNC)    strcat(str, "O_TRUNC ");
+    if (flags & O_APPEND)   strcat(str, "O_APPEND ");
+    if (flags & O_NOFOLLOW) strcat(str, "O_NOFOLLOW ");
+    if (flags & O_CLOEXEC)  strcat(str, "O_CLOEXEC ");
+    if (flags & O_NONBLOCK) strcat(str, "O_NONBLOCK ");
+    if (flags & O_SYNC)     strcat(str, "O_SYNC ");
+    if (flags & O_DSYNC)    strcat(str, "O_DSYNC ");
+    if (flags & O_RSYNC)    strcat(str, "O_RSYNC ");
+    if (flags & O_DIRECTORY) strcat(str, "O_DIRECTORY ");
+    
+    // 条件编译部分：如果系统定义了 O_NOATIME 和 O_PATH
+#ifdef O_NOATIME
+    if (flags & O_NOATIME)  strcat(str, "O_NOATIME ");
+#endif
+
+#ifdef O_PATH
+    if (flags & O_PATH)     strcat(str, "O_PATH ");
+#endif
+    
+    // 如果没有匹配到标志，返回 "Unknown"
+    if (str[0] == '\0') {
+        return "Unknown";
+    }
+    
+    return str;
+}
+
 static int handle_event_open(void *ctx, void *data, size_t data_sz)
 {
-	struct event_open *e = (struct event_open *)data;
-	char *filename = strrchr(e->path_name_, '/');
-	++filename;
+    const struct event_open *e = data;
+	struct tm *tm;
+	char ts[32];
+	time_t t;
 
-	char fd_path[path_size];
-	char actual_path[path_size];
-    char comm[TASK_COMM_LEN];
-	int i = 0;
-    int map_fd = *(int *)ctx;//传递map得文件描述符
+	time(&t);
+	tm = localtime(&t);
+	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+    const char *ret_str;
+    // 如果返回值是负数，则是错误码，使用 strerror
+    if (e->ret < 0) {
+        ret_str = strerror(-e->ret);  // 负数表示错误码
+    } else {
+        // 正数表示文件描述符，直接打印文件描述符
+        ret_str = "Success";  // 如果是文件描述符，表示成功
+    }
 
+    const char *flags_str = flags_to_str(e->flags);
 
-	for (; i < e->n_; ++i) {
-		snprintf(fd_path, sizeof(fd_path), "/proc/%d/fd/%d", e->pid_,
-			 i);
-		ssize_t len =
-			readlink(fd_path, actual_path, sizeof(actual_path) - 1);
-		if (len != -1) {
-			actual_path[len] = '\0';
-			int result = strcmp(e->path_name_, actual_path);
-			if (result == 0) {
-                if(bpf_map_lookup_elem(map_fd,&e->pid_,&comm)==0){
-                    printf("%-60s %-8d %-8d %-8s\n",
-				       e->path_name_, i,e->pid_,comm);
-                }else{
-                    fprintf(stderr, "Failed to lookup value for key %d\n", e->pid_);
-                    }
-
-			    }
-		    }
-	    }
+    printf("%-8s %-8d %-8d %-100s %-8s %-8d %-8s %-8s\n", 
+           ts, e->dfd, e->pid,e->filename, flags_str, e->fd, ret_str, e->is_created ? "true" : "false");
 	return 0;
 }
 
@@ -352,7 +366,7 @@ static int process_open(struct open_bpf *skel_open){
 
     LOAD_AND_ATTACH_SKELETON_MAP(skel_open,open);
 
-    printf("%-60s %-8s %-8s %-8s\n","filenamename","fd","pid","comm");
+    printf("%-8s %-8s %-8s %-100s %-8s %-8s %-8s %-8s\n", "TIME","dfd","PID", "filename", "flags", "fd", "ret", "is_created");
     POLL_RING_BUFFER(rb, 1000, err);
 
 open_cleanup:
@@ -381,21 +395,8 @@ read_cleanup:
 static int process_write(struct write_bpf *skel_write){
     int err;
     struct ring_buffer *rb;
-    int arg_index = 0;
-
-    struct dist_args d_args = {-1};
-
 
     LOAD_AND_ATTACH_SKELETON(skel_write,write);
-
-    d_args.pid = env.pid;
-    struct bpf_map *arg_map = bpf_object__find_map_by_name((const struct bpf_object *)*(skel_write->skeleton->obj), "args_map");
-    err = bpf_map__update_elem(arg_map, &arg_index, sizeof(arg_index), &d_args, sizeof(d_args), BPF_ANY);
-
-    if (err < 0) {
-        fprintf(stderr, "ERROR: failed to update args map\n");
-        goto write_cleanup;
-    }
 
     printf("%-8s    %-8s    %-8s    %-8s    %-8s\n","ds","inode_number","pid","real_count","count");
     POLL_RING_BUFFER(rb, 1000, err);

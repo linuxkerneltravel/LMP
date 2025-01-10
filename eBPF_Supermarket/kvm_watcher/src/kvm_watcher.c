@@ -1238,6 +1238,27 @@ int print_exit_map(struct kvm_watcher_bpf *skel) {
     __print_exit_map(userspace_exit_fd, EXIT_USERSPACE_NR);
     return 0;
 }
+// 移动光标到指定位置
+void move_cursor(int row, int col) {
+    printf("\033[%d;%dH", row, col); // ANSI 转义序列：移动光标到指定行列
+}
+// 打印容器系统调用固定描述内容
+void print_description() {
+    move_cursor(1, 1); // 将光标移到第 1 行第 1 列
+    printf("功能描述:实时监控指定容器的系统调用统计数据\n");
+    move_cursor(2, 1);
+    printf("采集内容:统计指定容器中所有进程调用次数最多的前5个系统调用信息\n");
+    move_cursor(3, 1);
+    printf("容器ID: %s\n",env.hostname);
+    move_cursor(4, 1);
+    printf("--------------------------------------------\n");
+    move_cursor(5, 1);
+    printf("%-13s %-10s %-10s %-10s %-10s %-15s\n", 
+           "ContainerID", "Comm", "Pid", "SYSCALLID", "Counts", "AVG_DELAY(us)");
+    move_cursor(6, 1);
+    printf("==============================================================\n");
+}
+
 int memset_big_struct(struct kvm_watcher_bpf *skel){
     //对占用大内存的结构体的map进行初始化
     int fd_memset = bpf_map__fd(skel->maps.proc_syscall_info);
@@ -1284,7 +1305,9 @@ int print_container_syscall(struct kvm_watcher_bpf *skel){
     
     int err ;
     //打印表头
-    printf("%-13s %-10s %-10s %-10s %-10s %-10s\n","ContainerID", "Comm","Pid","SYSCALLID","Counts","avage_DELAY(us)");
+    //printf("%-13s %-10s %-10s %-10s %-10s %-10s\n","ContainerID", "Comm","Pid","SYSCALLID","Counts","avage_DELAY(us)");
+    print_description();
+    move_cursor(7, 1);
     while(!bpf_map_get_next_key(fd,&lookup_key,&next_key)){
         err = bpf_map_lookup_elem(fd,&next_key,&values);
         if (err < 0) {
@@ -1294,6 +1317,7 @@ int print_container_syscall(struct kvm_watcher_bpf *skel){
         //找出最大的前五个系统调用号
         int max[5] = {-1, -1, -1, -1, -1}; // 记录前五个最大值的下标
         int top_values[5] = {0,0,0,0,0}; // 记录前五个最大值
+        uint64_t result = -1;
         for (int i = 0; i < 462; i++) {
             for (int j = 0; j < 5; j++) {
                 if (values.syscall_id_counts[i] > top_values[j]) {
@@ -1312,11 +1336,14 @@ int print_container_syscall(struct kvm_watcher_bpf *skel){
             if(max[i] == -1){
                 continue;
             }
-            uint64_t result = values.syscall_total_delay[max[i]] / values.syscall_id_counts[max[i]];
+            result = values.syscall_total_delay[max[i]] / values.syscall_id_counts[max[i]];
             printf("%-13s %-10s %-10d %-10d %-10d %llu\n",values.container_id,values.proc_name,next_key,
                 max[i],values.syscall_id_counts[max[i]],result); 
         }
         lookup_key = next_key;
+        if(result != -1){
+            printf("==============================================================\n");
+        }
     }
     memset(&lookup_key, 0, sizeof(pid_t));
     memset(&next_key, 0, sizeof(pid_t));
@@ -1328,9 +1355,7 @@ int print_container_syscall(struct kvm_watcher_bpf *skel){
         }
         lookup_key = next_key;
     }
-    printf("--------------------------\n");
     return 0;
-    
 }
 void print_map_and_check_error(int (*print_func)(struct kvm_watcher_bpf *),
                                struct kvm_watcher_bpf *skel,
@@ -1341,7 +1366,10 @@ void print_map_and_check_error(int (*print_func)(struct kvm_watcher_bpf *),
         printf("Error printing %s map: %d\n", map_name, err);
     }
 }
-
+void clear_screen() {
+    // ANSI 转义序列清屏
+    printf("\033[H\033[J");
+}
 void print_logo() {
     char *logo = LOGO_STRING;
     char command[512];
@@ -1356,7 +1384,6 @@ int attach_probe(struct kvm_watcher_bpf *skel) {
     return kvm_watcher_bpf__attach(skel);
 }
 int main(int argc, char **argv) {
-
     // 定义一个环形缓冲区
     struct ring_buffer *rb = NULL;
     struct kvm_watcher_bpf *skel;
@@ -1420,6 +1447,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Please specify an option using %s.\n", OPTIONS_LIST);
         goto cleanup;
     }
+    //实现刷屏操作
+    clear_screen();    
+    fflush(stdout);
+    print_description();
     //打印结果
     while (!exiting) {
         err = ring_buffer__poll(rb, RING_BUFFER_TIMEOUT_MS /* timeout, ms */);
@@ -1437,8 +1468,8 @@ int main(int argc, char **argv) {
                                       err);
         }
         if (env.execute_container_syscall){
-            //print_map_and_check_error(print_container_syscall,skel,"container_syscall",err);
             print_container_syscall(skel);
+            clear_screen();
         }
         /* Ctrl-C will cause -EINTR */
         if (err == -EINTR) {

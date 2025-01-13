@@ -1,0 +1,16 @@
+#全局配置部分，应用于所有的 job 配置
+global:
+  # 设置全局的抓取间隔，即 Prometheus 将每隔 50 毫秒收集一次指标
+  scrape_interval: 50ms
+
+# 抓取配置部分，用于指定要抓取的目标和相应的设置
+scrape_configs:
+  # 定义一个 job，命名为 'bpf_collector'，这个 job 用于配置 Prometheus 如何抓取数据
+  - job_name: 'bpf_collector'
+    # 指定从目标获取指标的路径，即采集路径
+    metrics_path: '/metrics'
+    # 配置静态目标的部分，其中的目标地址是静态的，不会动态变化
+    static_configs:
+    #需要采集的地址
+    - targets: ['172.17.0.1:8090']
+    #- targets: ['127.0.0.1:8090']

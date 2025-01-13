@@ -1,0 +1,9 @@
+proc_name: proc_image
+proc_path: ~/tmp/proc_image/proc_image
+proc_pid: 22896
+proc_max_records: 20    # 一次展示的最大数量
+
+tmux_name: tmux
+tmux_path: /root/lmp/eBPF_Supermarket/eBPF_proc_image/lock_image
+tmux_pid: 20080
+tmux_max_records: 200    # 一次展示的最大数量

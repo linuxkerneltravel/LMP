@@ -200,4 +200,13 @@ struct event {
     char comm[TASK_COMM_LEN];  // 被杀死进程的命令名
 };
 
+/* slabrate.h */
+#define CACHE_NAME_SIZE 32
+
+struct slabrate_info {
+	char name[CACHE_NAME_SIZE];
+	__u64 count;
+	__u64 size;
+};
+
 #endif /* __MEM_WATCHER_H */

@@ -6,20 +6,20 @@
 #define TASK_COMM_LEN 16
 
 struct event_open {
-    pid_t pid;
-    int dfd;
-    char filename[path_size];
-    int flags;
-    int fd;    // 文件描述符
-    int ret;   // 系统调用返回值
-    bool is_created;  // 标记文件是否创建
+    pid_t pid;          // 进程 ID
+    int dfd;            // 目录文件描述符
+    char filename[256]; // 文件路径
+    int flags;          // 打开标志
+    int fd;             // 文件描述符
+    int ret;            // 系统调用返回值
 };
 
 /*read*/
-
 struct event_read {
-	int pid;
-    unsigned long long duration_ns;
+    int pid;
+    char filename[256]; // 文件名
+    int count_size;     // 读取的字节数
+    unsigned short file_type; // 文件类型
 };
 
 /*write*/
@@ -64,9 +64,4 @@ struct event_CacheTrack{
     long long time_complete;  // 写回开始时间
 };
 
-/*send pid to ebpf*/
-struct dist_args {
-    pid_t pid;
-};
-#endif /* __MEM_WATCHER_H */
-
+#endif /* __FS_WATCHER_H */

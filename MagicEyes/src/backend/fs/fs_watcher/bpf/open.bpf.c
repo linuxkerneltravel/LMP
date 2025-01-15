@@ -1,13 +1,10 @@
-#include <vmlinux.h>
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "fs_watcher.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-#define O_CREAT  0x0200  // 手动定义 O_CREAT 标志的常量值
-#define O_WRONLY    01  /* open for writing only */
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -30,32 +27,31 @@ int do_syscall_trace(struct trace_event_raw_sys_enter *ctx)
 	e.dfd = ctx->args[0];// 目录文件描述符
 	bpf_probe_read_user_str(e.filename, sizeof(e.filename), (const char *)ctx->args[1]);  // 文件路径
  	e.flags = ctx->args[2];  // 打开标志
-	
-	// 如果包含 O_CREAT 标志，则标记为文件创建
-	if (e.flags & O_CREAT || (e.flags & O_WRONLY) ) {
-        e.is_created = true;
-    } else {
-        e.is_created = false;
-    }
 
 	bpf_map_update_elem(&data,&pid,&e,BPF_ANY);
 	return 0;
 }
 
-// 跟踪文件描述符分配过程
-SEC("kprobe/get_unused_fd_flags")
-int kprobe_get_unused_fd_flags(struct pt_regs *ctx){
+//跟踪文件描述符分配过程
+SEC("kretprobe/get_unused_fd_flags")
+int kretprobe_get_unused_fd_flags(struct pt_regs *ctx){
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	struct event_open *e = bpf_map_lookup_elem(&data,&pid);
 	if(!e){
 		bpf_printk("get_unused_fd_flags is failed to found fd\n");
 		return 0;
 	}
+    //获取分配的文件描述符
+    int fd = PT_REGS_RC(ctx);
 
-	//获取分配的文件描述符
-    e->fd = PT_REGS_RC(ctx);
-
-	bpf_map_update_elem(&data,&pid,e,BPF_ANY);
+    if (fd <= 0) {
+        bpf_printk("get_unused_fd_flags: syscall failed with error %d\n", fd);
+		return 0;
+    } else {
+        bpf_printk("get_unused_fd_flags: allocated fd %d\n", fd);
+        e->fd = fd;
+        bpf_map_update_elem(&data, &pid, e, BPF_ANY);
+    }
 	return 0;
 }
 
@@ -72,7 +68,7 @@ int do_syscall_exit(struct trace_event_raw_sys_exit *ctx)
 
 	e->ret = ctx->ret;
 
-	 // 分配 ringbuf 空间
+	// 分配 ringbuf 空间
     struct event_open *new_e = bpf_ringbuf_reserve(&rb, sizeof(*new_e), 0);
     if (!new_e) {
         return 0;  // 如果分配失败，提前返回
@@ -82,8 +78,7 @@ int do_syscall_exit(struct trace_event_raw_sys_exit *ctx)
 	new_e->dfd = e->dfd;
 	new_e->flags = e->flags;
 	new_e->fd = e->fd;
-	new_e->ret =e->ret;
-	new_e->is_created = e->is_created;
+	new_e->ret = e->ret;
 	new_e->pid = e->pid;
 
 	// 手动读取文件路径，确保不超过最大长度，并添加 '\0' 结束符
@@ -98,7 +93,6 @@ int do_syscall_exit(struct trace_event_raw_sys_exit *ctx)
     // 确保字符串以 '\0' 结束
     new_e->filename[filename_len] = '\0';
 	bpf_printk("Opening file: %s, pid: %d, flags: %d\n", new_e->filename, pid, e->flags);
-
 	bpf_ringbuf_submit(new_e, 0);
 	return 0;
 }

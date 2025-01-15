@@ -19,6 +19,7 @@
 #include "net_watcher/include/net_watcher.h"
 #include "net_watcher/include/dropreason.h"
 #include "net/net_watcher/net_watcher.skel.h"
+#include "../include/net_watcher_hepler.h"
 #include <argp.h>
 #include <arpa/inet.h>
 #include <bpf/bpf.h>
@@ -35,19 +36,10 @@
 
 static volatile bool exiting = false;
 struct packet_count proto_stats[256] = {0};
-static u64 rst_count = 0;
 static struct reset_event_t event_store[MAX_EVENTS];
-static int event_count = 0, num_symbols = 0, cache_size = 0;
-static char binary_path[64] = "";
-
-typedef struct
-{
-    char key[256];
-    u32 value;
-} kv_pair;
-
-static int map_fd;
-
+int event_count = 0, num_symbols = 0, cache_size = 0, map_fd;
+static u64 sample_period = TIME_THRESHOLD_NS, rst_count = 0;
+static char binary_path[64] = "", *dst_ip = NULL, *src_ip = NULL;
 static int sport = 0, dport = 0; // for filter
 static int all_conn = 0, err_packet = 0, extra_conn_info = 0, layer_time = 0,
            http_info = 0, retrans_info = 0, udp_info = 0, net_filter = 0,
@@ -55,7 +47,34 @@ static int all_conn = 0, err_packet = 0, extra_conn_info = 0, layer_time = 0,
            time_load = 0, dns_info = 0, stack_info = 0, mysql_info = 0,
            redis_info = 0, count_info = 0, rtt_info = 0, rst_info = 0,
            protocol_count = 0, redis_stat = 0, overrun_time = 0; // flag
-static char *dst_ip = NULL, *src_ip = NULL;
+struct SymbolEntry symbols[300000];
+struct SymbolEntry cache[CACHEMAXSIZE];
+float ewma_values[NUM_LAYERS] = {0};
+int count[NUM_LAYERS] = {0};
+
+struct ring_buffer_info
+{
+    struct ring_buffer *rb;
+    const char *name;
+};
+
+// 定义一个数组存储所有的 ring_buffer 信息
+struct ring_buffer_info ring_buffers[] = {
+    {NULL, "rb"},
+    {NULL, "udp_rb"},
+    {NULL, "netfilter_rb"},
+    {NULL, "kfree_rb"},
+    {NULL, "icmp_rb"},
+    {NULL, "tcp_rb"},
+    {NULL, "dns_rb"},
+    {NULL, "trace_rb"},
+    {NULL, "mysql_rb"},
+    {NULL, "redis_rb"},
+    {NULL, "redis_stat_rb"},
+    {NULL, "rtt_rb"},
+    {NULL, "events"},
+    {NULL, "port_rb"},
+    {NULL, "rate_rb"}};
 
 static const char argp_program_doc[] = "Watch tcp/ip in network subsystem \n";
 static const struct argp_option opts[] = {
@@ -95,7 +114,7 @@ static const struct argp_option opts[] = {
     {NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help"},
     {}};
 
-static u64 sample_period = TIME_THRESHOLD_NS;
+// static u64 sample_period = TIME_THRESHOLD_NS;
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
     char *end;
@@ -292,271 +311,6 @@ enum MonitorMode get_monitor_mode()
         return MODE_DEFAULT;
     }
 }
-#define LOGO_STRING                                                            \
-    " "                                                                        \
-    "              __                          __           __               " \
-    "        \n"                                                               \
-    "             /\\ \\__                      /\\ \\__       /\\ \\        " \
-    "              \n"                                                         \
-    "  ___      __\\ \\  _\\  __  __  __     __  \\ \\  _\\   ___\\ \\ \\___ " \
-    "     __   _ __   \n"                                                      \
-    "/  _  \\  / __ \\ \\ \\/ /\\ \\/\\ \\/\\ \\  / __ \\ \\ \\ \\/  / ___\\ " \
-    "\\  _  \\  / __ \\/\\  __\\ \n"                                           \
-    "/\\ \\/\\ \\/\\  __/\\ \\ \\_\\ \\ \\_/ \\_/ \\/\\ \\_\\ \\_\\ \\ "       \
-    "\\_/\\ \\__/\\ \\ \\ \\ \\/\\  __/\\ \\ \\/  \n"                          \
-    "\\ \\_\\ \\_\\ \\____\\ \\__\\ \\_______ / /\\ \\__/\\ \\_\\ \\__\\ "     \
-    "\\____/\\ \\_\\ \\_\\ \\____ \\ \\_\\  \n"                                \
-    " \\/_/\\/_/\\/____/ \\/__/ \\/__//__ /  \\/_/  \\/_/\\/__/\\/____/ "      \
-    "\\/_/\\/_/\\/____/ \\/_/  \n\n"
-
-void print_logo()
-{
-    char *logo = LOGO_STRING;
-    int i = 0;
-    FILE *lolcat_pipe = popen("/usr/games/lolcat", "w");
-    if (lolcat_pipe == NULL)
-    {
-        printf("Error: Unable to execute lolcat command.\n");
-        return;
-    }
-    // 像lolcat管道逐个字符写入字符串
-    while (logo[i] != '\0')
-    {
-        fputc(logo[i], lolcat_pipe);
-        fflush(lolcat_pipe); // 刷新管道，确保字符被立即发送给lolcat
-        usleep(150);
-        i++;
-    }
-
-    pclose(lolcat_pipe);
-}
-#define __ATTACH_UPROBE(skel, sym_name, prog_name, is_retprobe)           \
-    do                                                                    \
-    {                                                                     \
-        LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts, .func_name = #sym_name, \
-                    .retprobe = is_retprobe);                             \
-        skel->links.prog_name = bpf_program__attach_uprobe_opts(          \
-            skel->progs.prog_name, -1, binary_path, 0, &uprobe_opts);     \
-    } while (false)
-
-#define __CHECK_PROGRAM(skel, prog_name)                   \
-    do                                                     \
-    {                                                      \
-        if (!skel->links.prog_name)                        \
-        {                                                  \
-            perror("no program attached for " #prog_name); \
-            return -errno;                                 \
-        }                                                  \
-    } while (false)
-
-#define __ATTACH_UPROBE_CHECKED(skel, sym_name, prog_name, is_retprobe) \
-    do                                                                  \
-    {                                                                   \
-        __ATTACH_UPROBE(skel, sym_name, prog_name, is_retprobe);        \
-        __CHECK_PROGRAM(skel, prog_name);                               \
-    } while (false)
-
-#define ATTACH_UPROBE(skel, sym_name, prog_name) \
-    __ATTACH_UPROBE(skel, sym_name, prog_name, false)
-#define ATTACH_URETPROBE(skel, sym_name, prog_name) \
-    __ATTACH_UPROBE(skel, sym_name, prog_name, true)
-
-#define ATTACH_UPROBE_CHECKED(skel, sym_name, prog_name) \
-    __ATTACH_UPROBE_CHECKED(skel, sym_name, prog_name, false)
-#define ATTACH_URETPROBE_CHECKED(skel, sym_name, prog_name) \
-    __ATTACH_UPROBE_CHECKED(skel, sym_name, prog_name, true)
-
-struct SymbolEntry symbols[300000];
-struct SymbolEntry cache[CACHEMAXSIZE];
-// LRU算法查找函数
-struct SymbolEntry find_in_cache(unsigned long int addr)
-{
-    // 查找地址是否在快表中
-    for (int i = 0; i < cache_size; i++)
-    {
-        if (cache[i].addr == addr)
-        {
-            // 更新访问时间
-            struct SymbolEntry temp = cache[i];
-            // 将访问的元素移动到快表的最前面，即最近使用的位置
-            for (int j = i; j > 0; j--)
-            {
-                cache[j] = cache[j - 1];
-            }
-            cache[0] = temp;
-            return temp;
-        }
-    }
-    // 如果地址不在快表中，则返回空
-    struct SymbolEntry empty_entry;
-    empty_entry.addr = 0;
-    return empty_entry;
-}
-// 将新的符号条目加入快表
-void add_to_cache(struct SymbolEntry entry)
-{
-    // 如果快表已满，则移除最久未使用的条目
-    if (cache_size == CACHEMAXSIZE)
-    {
-        for (int i = cache_size - 1; i > 0; i--)
-        {
-            cache[i] = cache[i - 1];
-        }
-        cache[0] = entry;
-    }
-    else
-    {
-        // 否则，直接加入快表
-        for (int i = cache_size; i > 0; i--)
-        {
-            cache[i] = cache[i - 1];
-        }
-        cache[0] = entry;
-        cache_size++;
-    }
-}
-struct SymbolEntry findfunc(unsigned long int addr)
-{
-    // 先在快表中查找
-    struct SymbolEntry entry = find_in_cache(addr);
-    if (entry.addr != 0)
-    {
-        return entry;
-    }
-    unsigned long long low = 0, high = num_symbols - 1;
-    unsigned long long result = -1;
-
-    while (low <= high)
-    {
-        int mid = low + (high - low) / 2;
-        if (symbols[mid].addr < addr)
-        {
-            result = mid;
-            low = mid + 1;
-        }
-        else
-        {
-            high = mid - 1;
-        }
-    }
-    add_to_cache(symbols[result]);
-    return symbols[result];
-};
-
-void readallsym()
-{
-    FILE *file = fopen("/proc/kallsyms", "r");
-    if (!file)
-    {
-        perror("Error opening file");
-        exit(EXIT_FAILURE);
-    }
-    char line[256];
-    while (fgets(line, sizeof(line), file))
-    {
-        unsigned long addr;
-        char type, name[30];
-        int ret = sscanf(line, "%lx %c %s", &addr, &type, name);
-        if (ret == 3)
-        {
-            symbols[num_symbols].addr = addr;
-            strncpy(symbols[num_symbols].name, name, 30);
-            num_symbols++;
-        }
-    }
-
-    fclose(file);
-}
-/*
-    指数加权移动平均算法（EWMA）
-    1.使用指数加权移动平均算法（EWMA）来计算每层的指数加权移动平均值，
-    公式EWMA_new = alpha * new_value + (1 - alpha) * old_ewma ,alpha
-   指数加权系数，表示新数据点的权重，new_value 当前时延，old_ewma
-   旧的指数加权移动平均值
-    2.根据当前时延和指数加权移动平均值*预先设定的粒度阈值（GRANULARITY）对比，来判断时延是否异常
-    3.可以快速适应数据的变化，并能够有效地检测异常时延
-
-*/
-// 全局变量用于存储每层的移动平均值
-float ewma_values[NUM_LAYERS] = {0};
-int count[NUM_LAYERS] = {0};
-
-// 指数加权移动平均算法
-float calculate_ewma(float new_value, float old_ewma)
-{
-    return ALPHA * new_value + (1 - ALPHA) * old_ewma;
-}
-
-// 收集时延数据并检测异常
-int process_delay(float layer_delay, int layer_index)
-{
-
-    if (layer_delay == 0)
-        return 0;
-    count[layer_index]++;
-    if (ewma_values[layer_index] == 0)
-    {
-        ewma_values[layer_index] = layer_delay;
-        return 0;
-    }
-    // 计算阈值,指数加权移动平均值乘以粒度因子
-    ewma_values[layer_index] =
-        calculate_ewma(layer_delay, ewma_values[layer_index]);
-    float threshold = ewma_values[layer_index] * GRANULARITY;
-    if (count[layer_index] > 30)
-    {
-        // 判断当前时延是否超过阈值
-        //   printf("%d %d:%f %f
-        //   ",layer_index,count[layer_index]++,threshold,layer_delay);
-        if (layer_delay > threshold)
-        { // 异常
-            return 1;
-        }
-        else
-        {
-            return 0;
-        }
-    }
-    return 0;
-}
-
-static int should_filter(const char *src, const char *dst, const char *filter_src_ip, const char *filter_dst_ip)
-{
-    // 均未指定
-    if (!filter_src_ip && !filter_dst_ip)
-    {
-        return 1;
-    }
-
-    // 指定源IP和目的IP
-    if (filter_src_ip && filter_dst_ip)
-    {
-        if (strcmp(src, filter_src_ip) == 0 && strcmp(dst, filter_dst_ip) == 0)
-        {
-            return 1;
-        }
-    }
-    // 只指定源IP
-    else if (filter_src_ip)
-    {
-
-        if (strcmp(src, filter_src_ip) == 0)
-        {
-            return 1;
-        }
-    }
-    // 只指定目的IP
-    else if (filter_dst_ip)
-    {
-        if (strcmp(dst, filter_dst_ip) == 0)
-        {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
 static void set_rodata_flags(struct net_watcher_bpf *skel)
 {
     skel->rodata->filter_dport = dport;
@@ -902,25 +656,6 @@ static void print_header(enum MonitorMode mode)
 }
 
 static void sig_handler(int signo) { exiting = true; }
-static void bytes_to_str(char *str, unsigned long long num)
-{
-    if (num > 1e9)
-    {
-        sprintf(str, "%.8lfG", (double)num / 1e9);
-    }
-    else if (num > 1e6)
-    {
-        sprintf(str, "%.6lfM", (double)num / 1e6);
-    }
-    else if (num > 1e3)
-    {
-        sprintf(str, "%.3lfK", (double)num / 1e3);
-    }
-    else
-    {
-        sprintf(str, "%llu", num);
-    }
-}
 
 static int print_conns(struct net_watcher_bpf *skel)
 {
@@ -975,7 +710,7 @@ static int print_conns(struct net_watcher_bpf *skel)
         if (extra_conn_info)
         {
             printf("%-15s %-10d %-15s %-10d %-10u %-10u %-10u %-10u %-10u %-10u %-13u %-10s %-10s %-10u %-10llu\n",
-                   s_ip_only, d.sport,d_ip_only, d.dport, d.tcp_backlog,
+                   s_ip_only, d.sport, d_ip_only, d.dport, d.tcp_backlog,
                    d.max_tcp_backlog, d.rcv_wnd, d.snd_cwnd, d.snd_ssthresh,
                    d.sndbuf, d.sk_wmem_queued, received_bytes, acked_bytes, d.srtt,
                    d.duration);
@@ -1009,16 +744,10 @@ static int print_packet(void *ctx, void *packet_info, size_t size)
     unsigned int daddr = pack_info->daddr;
     inet_ntop(AF_INET, &saddr, s_str, sizeof(s_str));
     inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
-    if (should_filter(s_str, d_str, src_ip, dst_ip))
+    if (!should_filter(s_str, d_str, src_ip, dst_ip))
     {
         return 0;
     }
-    if (dport)
-        if (pack_info->dport != dport)
-            return 0;
-    if (sport)
-        if (pack_info->sport != sport)
-            return 0;
     if (strstr((char *)pack_info->data, "HTTP/1"))
     {
 
@@ -1038,6 +767,7 @@ static int print_packet(void *ctx, void *packet_info, size_t size)
     }
     if (layer_time)
     {
+
         printf("%-22p %-20s %-8d %-20s %-8d %-14llu %-14llu %-14llu %-14u %-14u %-14d "
                "%-16s",
                pack_info->sock,
@@ -1118,7 +848,7 @@ static int print_udp(void *ctx, void *packet_info, size_t size)
     }
 
     printf("%-20s %-20u %-20s %-20u %-20llu %-20d %-20d\n",
-           s_str, pack_info->sport,d_str, pack_info->dport,
+           s_str, pack_info->sport, d_str, pack_info->dport,
            pack_info->tran_time, pack_info->rx, pack_info->len);
 
     if (time_load)
@@ -1158,7 +888,7 @@ static int print_netfilter(void *ctx, void *packet_info, size_t size)
     }
 
     printf("%-20s %-12d %-20s %-12d %-8lld %-8lld% -8lld %-8lld %-8lld %-8d",
-           s_str, pack_info->sport,d_str,
+           s_str, pack_info->sport, d_str,
            pack_info->dport, pack_info->pre_routing_time,
            pack_info->local_input_time, pack_info->forward_time,
            pack_info->post_routing_time, pack_info->local_out_time,
@@ -1204,7 +934,7 @@ static int print_tcpstate(void *ctx, void *packet_info, size_t size)
     }
 
     printf("%-20s %-20d %-20s %-20d %-20s %-20s  %-20lld\n",
-           s_str, pack_info->sport,d_str,
+           s_str, pack_info->sport, d_str,
            pack_info->dport, tcp_states[pack_info->oldstate],
            tcp_states[pack_info->newstate], pack_info->time);
 
@@ -1340,7 +1070,7 @@ static int print_kfree(void *ctx, void *packet_info, size_t size)
     struct tm *localTime = localtime(&now);
     printf("%02d:%02d:%02d      %-17s %-10u %-17s %-10u %-10s",
            localTime->tm_hour, localTime->tm_min, localTime->tm_sec,
-           s_str, pack_info->sport,d_str,
+           s_str, pack_info->sport, d_str,
            pack_info->dport, prot);
     if (!addr_to_func)
         printf("%-34lx", pack_info->location);
@@ -1424,7 +1154,7 @@ static void print_stored_events()
             inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
             printf("%-10d %-10s %-10s %-10u %-10s %-10u %-20llu",
                    event->pid, event->comm, s_str,
-                   event->sport, d_str,event->dport,
+                   event->sport, d_str, event->dport,
                    event->timestamp);
         }
         else if (event->family == AF_INET6)
@@ -1434,35 +1164,11 @@ static void print_stored_events()
             inet_ntop(AF_INET6, &event->daddr_v6, daddr_v6, sizeof(daddr_v6));
             printf("%-10d %10s %-10s %-10u %-10s %-10u %-20llu\n",
                    event->pid, event->comm, saddr_v6,
-                    event->sport,daddr_v6, event->dport,
+                   event->sport, daddr_v6, event->dport,
                    event->timestamp);
         }
         printf("\n");
     }
-}
-static void print_domain_name(const unsigned char *data, char *output)
-{
-    const unsigned char *next = data;
-    int pos = 0, first = 1;
-    // 循环到尾部，标志0
-    while (*next != 0)
-    {
-        if (!first)
-        {
-            output[pos++] = '.'; // 在每个段之前添加点号
-        }
-        else
-        {
-            first = 0; // 第一个段后清除标志
-        }
-        int len = *next++; // 下一个段长度
-
-        for (int i = 0; i < len; ++i)
-        {
-            output[pos++] = *next++;
-        }
-    }
-    output[pos] = '\0';
 }
 static int print_dns(void *ctx, void *packet_info, size_t size)
 {
@@ -1529,35 +1235,6 @@ static int print_redis(void *ctx, void *packet_info, size_t size)
     strcpy(redis, "");
     return 0;
 }
-static int process_redis_first(char flag, char *message)
-{
-    if (flag == '+')
-    {
-        strcpy(message, "Status Reply");
-    }
-    else if (flag == '-')
-    {
-        strcpy(message, "Error Reply");
-    }
-    else if (flag == ':')
-    {
-        strcpy(message, "Integer Reply");
-    }
-    else if (flag == '$')
-    {
-        strcpy(message, "Bulk String Reply");
-    }
-    else if (flag == '*')
-    {
-        strcpy(message, "Array Reply");
-    }
-    else
-    {
-        strcpy(message, "Unknown Type");
-    }
-    return 0;
-}
-
 static int print_redis_stat(void *ctx, void *packet_info, size_t size)
 {
     if (!redis_stat)
@@ -1649,7 +1326,7 @@ static int print_rate(void *ctx, void *data, size_t size)
     }
 
     printf("%-20s %-20d %-20s %-20d %-20lld %-20lld\n", s_str,
-           pack_info->skbap.sport, d_str,pack_info->skbap.dport, pack_info->tcp_rto,
+           pack_info->skbap.sport, d_str, pack_info->skbap.dport, pack_info->tcp_rto,
            pack_info->tcp_delack_max);
 
     return 0;
@@ -1759,8 +1436,7 @@ void print_top_5_keys()
         index++;
     }
 
-    // 排序前 5 个元素
-    // 简单选择排序
+    // 简单选择排序前 5 个元素
     for (int i = 0; i < index - 1; i++)
     {
         for (int j = i + 1; j < index; j++)
@@ -1783,26 +1459,103 @@ void print_top_5_keys()
     free(pairs);
 }
 
+// free
+static void free_ring_buffers()
+{
+    for (size_t i = 0; i < sizeof(ring_buffers) / sizeof(ring_buffers[0]); i++)
+    {
+        if (ring_buffers[i].rb)
+        {
+            ring_buffer__free(ring_buffers[i].rb);
+        }
+    }
+}
+
+// create
+static int create_ring_buffers(struct net_watcher_bpf *skel)
+{
+    int err = 0;
+    for (size_t i = 0; i < sizeof(ring_buffers) / sizeof(ring_buffers[0]); i++)
+    {
+        struct ring_buffer_info *info = &ring_buffers[i];
+
+        // 根据 BPF Map 的 fd 创建 ring buffer
+        if (strcmp(info->name, "rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), print_packet, NULL, NULL);
+        }
+        else if (strcmp(info->name, "udp_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.udp_rb), print_udp, NULL, NULL);
+        }
+        else if (strcmp(info->name, "netfilter_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.netfilter_rb), print_netfilter, NULL, NULL);
+        }
+        else if (strcmp(info->name, "kfree_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.kfree_rb), print_kfree, NULL, NULL);
+        }
+        else if (strcmp(info->name, "icmp_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.icmp_rb), print_icmptime, NULL, NULL);
+        }
+        else if (strcmp(info->name, "tcp_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.tcp_rb), print_tcpstate, NULL, NULL);
+        }
+        else if (strcmp(info->name, "dns_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.dns_rb), print_dns, NULL, NULL);
+        }
+        else if (strcmp(info->name, "trace_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.trace_rb), print_trace, NULL, NULL);
+        }
+        else if (strcmp(info->name, "mysql_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.mysql_rb), print_mysql, NULL, NULL);
+        }
+        else if (strcmp(info->name, "redis_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.redis_rb), print_redis, NULL, NULL);
+        }
+        else if (strcmp(info->name, "redis_stat_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.redis_stat_rb), print_redis_stat, NULL, NULL);
+        }
+        else if (strcmp(info->name, "rtt_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.rtt_rb), print_rtt, NULL, NULL);
+        }
+        else if (strcmp(info->name, "events") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.events), print_rst, NULL, NULL);
+        }
+        else if (strcmp(info->name, "port_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.port_rb), print_protocol_count, NULL, NULL);
+        }
+        else if (strcmp(info->name, "rate_rb") == 0)
+        {
+            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.rate_rb), print_rate, NULL, NULL);
+        }
+
+        if (!info->rb)
+        {
+            fprintf(stderr, "Failed to create ring buffer for %s\n", info->name);
+            err = -1;
+            break;
+        }
+    }
+    return err;
+}
+
 int main(int argc, char **argv)
 {
-
-    struct ring_buffer *rb = NULL;
-    struct ring_buffer *udp_rb = NULL;
-    struct ring_buffer *netfilter_rb = NULL;
-    struct ring_buffer *kfree_rb = NULL;
-    struct ring_buffer *icmp_rb = NULL;
-    struct ring_buffer *tcp_rb = NULL;
-    struct ring_buffer *dns_rb = NULL;
-    struct ring_buffer *trace_rb = NULL;
-    struct ring_buffer *mysql_rb = NULL;
-    struct ring_buffer *redis_rb = NULL;
-    struct ring_buffer *redis_stat_rb = NULL;
-    struct ring_buffer *rtt_rb = NULL;
-    struct ring_buffer *events = NULL;
-    struct ring_buffer *port_rb = NULL;
-    struct ring_buffer *rate_rb = NULL;
     struct net_watcher_bpf *skel;
     int err;
+
     /* Parse command line arguments */
     if (argc > 1)
     {
@@ -1813,20 +1566,21 @@ int main(int argc, char **argv)
 
     // libbpf_set_print(libbpf_print_fn);
 
-    /* Cleaner handling of Ctrl-C */
+    // Signal handling for graceful exit
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
-    /* Open load and verify BPF application */
+
+    // Open and load BPF skeleton
     skel = net_watcher_bpf__open();
     if (!skel)
     {
         fprintf(stderr, "Failed to open BPF skeleton\n");
         return 1;
     }
-    /* Parameterize BPF code */
+
+    // Parameterize BPF code
     set_rodata_flags(skel);
     set_disable_load(skel);
-
     if (addr_to_func)
         readallsym();
     err = net_watcher_bpf__load(skel);
@@ -1835,6 +1589,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to load and verify BPF skeleton\n");
         goto cleanup;
     }
+
     /* Attach tracepoint handler */
     if (mysql_info)
     {
@@ -1872,165 +1627,35 @@ int main(int argc, char **argv)
     print_logo();
 
     print_header(mode);
-
-    udp_rb =
-        ring_buffer__new(bpf_map__fd(skel->maps.udp_rb), print_udp, NULL, NULL);
-    if (!udp_rb)
+    // Create ring buffers
+    err = create_ring_buffers(skel);
+    if (err)
     {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(udp)\n");
-        goto cleanup;
-    }
-    netfilter_rb = ring_buffer__new(bpf_map__fd(skel->maps.netfilter_rb),
-                                    print_netfilter, NULL, NULL);
-    if (!netfilter_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(netfilter)\n");
-        goto cleanup;
-    }
-    kfree_rb = ring_buffer__new(bpf_map__fd(skel->maps.kfree_rb), print_kfree,
-                                NULL, NULL);
-    if (!kfree_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(kfree)\n");
-        goto cleanup;
-    }
-    icmp_rb = ring_buffer__new(bpf_map__fd(skel->maps.icmp_rb), print_icmptime,
-                               NULL, NULL);
-    if (!icmp_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(icmp)\n");
-        goto cleanup;
-    }
-    tcp_rb = ring_buffer__new(bpf_map__fd(skel->maps.tcp_rb), print_tcpstate,
-                              NULL, NULL);
-    if (!tcp_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(tcp)\n");
-        goto cleanup;
-    }
-    dns_rb =
-        ring_buffer__new(bpf_map__fd(skel->maps.dns_rb), print_dns, NULL, NULL);
-    if (!dns_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(dns)\n");
-        goto cleanup;
-    }
-    trace_rb = ring_buffer__new(bpf_map__fd(skel->maps.trace_rb), print_trace,
-                                NULL, NULL);
-    if (!trace_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(trace)\n");
-        goto cleanup;
-    }
-    mysql_rb = ring_buffer__new(bpf_map__fd(skel->maps.mysql_rb), print_mysql,
-                                NULL, NULL);
-    if (!mysql_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(trace)\n");
-        goto cleanup;
-    }
-    redis_rb = ring_buffer__new(bpf_map__fd(skel->maps.redis_rb), print_redis,
-                                NULL, NULL);
-    if (!redis_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(trace)\n");
-        goto cleanup;
-    }
-    redis_stat_rb = ring_buffer__new(bpf_map__fd(skel->maps.redis_stat_rb), print_redis_stat,
-                                     NULL, NULL);
-    if (!redis_stat_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(trace)\n");
-        goto cleanup;
-    }
-    rtt_rb =
-        ring_buffer__new(bpf_map__fd(skel->maps.rtt_rb), print_rtt, NULL, NULL);
-    if (!rtt_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(connect_rb)\n");
-        goto cleanup;
-    }
-    events =
-        ring_buffer__new(bpf_map__fd(skel->maps.events), print_rst, NULL, NULL);
-    if (!events)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(rst_rb)\n");
         goto cleanup;
     }
 
-    port_rb = ring_buffer__new(bpf_map__fd(skel->maps.port_rb),
-                               print_protocol_count, NULL, NULL);
-    if (!port_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(trace)\n");
-        goto cleanup;
-    }
-
-    rate_rb = ring_buffer__new(bpf_map__fd(skel->maps.rate_rb),
-                               print_rate, NULL, NULL);
-    if (!rate_rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(trace)\n");
-        goto cleanup;
-    }
-    /* Set up ring buffer polling */
-    rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), print_packet, NULL, NULL);
-    if (!rb)
-    {
-        err = -1;
-        fprintf(stderr, "Failed to create ring buffer(packet)\n");
-        goto cleanup;
-    }
-
-    // open_log_files();
+    // Polling and event handling loop
     struct timeval start, end;
     gettimeofday(&start, NULL);
-    /* Process events */
     while (!exiting)
     {
-        err = ring_buffer__poll(rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(udp_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(netfilter_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(kfree_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(icmp_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(tcp_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(dns_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(trace_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(mysql_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(redis_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(rtt_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(events, 100 /* timeout, ms */);
-        err = ring_buffer__poll(port_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(redis_stat_rb, 100 /* timeout, ms */);
-        err = ring_buffer__poll(rate_rb, 100 /* timeout, ms */);
-        print_conns(skel);
-        sleep(1);
-        /* Ctrl-C will cause -EINTR */
-        if (err == -EINTR)
+        // Poll all ring buffers
+        for (size_t i = 0; i < sizeof(ring_buffers) / sizeof(ring_buffers[0]); i++)
         {
-            err = 0;
-            break;
+            err = ring_buffer__poll(ring_buffers[i].rb, 100); // Timeout in ms
+            if (err == -EINTR)
+            {
+                err = 0;
+                break;
+            }
+            if (err < 0)
+            {
+                printf("Error polling ring buffer for %s: %d\n", ring_buffers[i].name, err);
+                break;
+            }
         }
-        if (err < 0)
-        {
-            printf("Error polling perf buffer: %d\n", err);
-            break;
-        }
-        gettimeofday(&end, NULL);
+
+         gettimeofday(&end, NULL);
         if (overrun_time)
         {
             u32 key = 0;
@@ -2073,21 +1698,8 @@ int main(int argc, char **argv)
         }
     }
 cleanup:
-    ring_buffer__free(rb);
-    ring_buffer__free(udp_rb);
-    ring_buffer__free(netfilter_rb);
-    ring_buffer__free(kfree_rb);
-    ring_buffer__free(icmp_rb);
-    ring_buffer__free(tcp_rb);
-    ring_buffer__free(dns_rb);
-    ring_buffer__free(trace_rb);
-    ring_buffer__free(mysql_rb);
-    ring_buffer__free(redis_rb);
-    ring_buffer__free(rtt_rb);
-    ring_buffer__free(events);
-    ring_buffer__free(port_rb);
-    ring_buffer__free(redis_stat_rb);
-    ring_buffer__free(rate_rb);
+    // Release ring buffers and cleanup BPF
+    free_ring_buffers();
     net_watcher_bpf__destroy(skel);
     return err < 0 ? -err : 0;
 }

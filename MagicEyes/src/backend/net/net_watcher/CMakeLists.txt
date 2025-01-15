@@ -34,7 +34,11 @@ foreach(app ${apps})
     add_dependencies(${app_stem}_skel libbpf-build bpftool-build)
 endforeach()
 
-add_executable(${TOOL_NAME} src/${TOOL_NAME}.c)
+# add_executable(${TOOL_NAME} src/${TOOL_NAME}.c)
+add_executable(${TOOL_NAME} 
+    src/${TOOL_NAME}.c 
+    src/net_watcher_hepler.c 
+)
 foreach (app ${apps})
     get_filename_component(app_stem ${app} NAME_WE)
     target_link_libraries(${TOOL_NAME} ${app_stem}_skel)

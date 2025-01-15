@@ -227,6 +227,7 @@ SEC("kprobe/tcp_enter_loss")
 int BPF_KPROBE(tcp_enter_loss, struct sock *sk) { return __tcp_enter_loss(sk); }
 
 /* udp */
+//收包 udp_rcv-->__udp_enqueue_schedule_skb(数据包排队)
 SEC("kprobe/udp_rcv")
 int BPF_KPROBE(udp_rcv, struct sk_buff *skb) {
     if (udp_info)
@@ -242,7 +243,7 @@ int BPF_KPROBE(__udp_enqueue_schedule_skb, struct sock *sk,
                struct sk_buff *skb) {
     return udp_enqueue_schedule_skb(sk, skb);
 }
-
+//发包 udp_send_skb-->ip_send_skb（skb 交给 IP 协议层）
 SEC("kprobe/udp_send_skb")
 int BPF_KPROBE(udp_send_skb, struct sk_buff *skb) {
     if (udp_info)

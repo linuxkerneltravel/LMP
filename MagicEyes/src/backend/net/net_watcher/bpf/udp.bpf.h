@@ -15,8 +15,9 @@
 // author: blown.away@qq.com
 
 #include "common.bpf.h"
-
-static __always_inline int __udp_rcv(struct sk_buff *skb) {
+// receive
+static __always_inline int __udp_rcv(struct sk_buff *skb)
+{
     if (!udp_info || skb == NULL)
         return 0;
     struct iphdr *ip = skb_to_iphdr(skb);
@@ -27,14 +28,16 @@ static __always_inline int __udp_rcv(struct sk_buff *skb) {
     struct ktime_info *tinfo, zero = {0};
     tinfo = (struct ktime_info *)bpf_map_lookup_or_try_init(&timestamps,
                                                             &pkt_tuple, &zero);
-    if (tinfo == NULL) {
+    if (tinfo == NULL)
+    {
         return 0;
     }
     tinfo->tran_time = bpf_ktime_get_ns() / 1000;
     return 0;
 }
 static __always_inline int udp_enqueue_schedule_skb(struct sock *sk,
-                                                    struct sk_buff *skb) {
+                                                    struct sk_buff *skb)
+{
     if (!udp_info || skb == NULL)
         return 0;
     struct iphdr *ip = skb_to_iphdr(skb);
@@ -44,14 +47,16 @@ static __always_inline int udp_enqueue_schedule_skb(struct sock *sk,
     FILTER
     struct ktime_info *tinfo, zero = {0};
     tinfo = bpf_map_lookup_elem(&timestamps, &pkt_tuple);
-    if (tinfo == NULL) {
+    if (tinfo == NULL)
+    {
         return 0;
     }
     struct udp_message *message;
     struct udp_message *udp_message =
         bpf_map_lookup_elem(&timestamps, &pkt_tuple);
     message = bpf_ringbuf_reserve(&udp_rb, sizeof(*message), 0);
-    if (!message) {
+    if (!message)
+    {
         return 0;
     }
     message->saddr = pkt_tuple.saddr;
@@ -64,32 +69,33 @@ static __always_inline int udp_enqueue_schedule_skb(struct sock *sk,
     bpf_ringbuf_submit(message, 0);
     return 0;
 }
-
-static __always_inline int __udp_send_skb(struct sk_buff *skb) {
+// send
+static __always_inline int __udp_send_skb(struct sk_buff *skb)
+{
     if (!udp_info || skb == NULL)
         return 0;
     struct packet_tuple pkt_tuple = {0};
     struct sock *sk = BPF_CORE_READ(skb, sk);
     u16 dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
     u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-    pkt_tuple.saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr); // 源ip
-    pkt_tuple.daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);     // 目的ip
-    pkt_tuple.sport = sport;                                        // 源端口
-    pkt_tuple.dport = __bpf_ntohs(dport); // 目的端口并进行字节序转换
+    pkt_tuple.saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    pkt_tuple.daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    pkt_tuple.sport = sport;
+    pkt_tuple.dport = __bpf_ntohs(dport);
     pkt_tuple.tran_flag = UDP;
     FILTER
     struct ktime_info *tinfo, zero = {0};
-    bpf_printk("udp_send_skb%d %d %d %d", pkt_tuple.saddr, pkt_tuple.daddr,
-               pkt_tuple.sport, pkt_tuple.dport);
     tinfo = (struct ktime_info *)bpf_map_lookup_or_try_init(&timestamps,
                                                             &pkt_tuple, &zero);
-    if (tinfo == NULL) {
+    if (tinfo == NULL)
+    {
         return 0;
     }
     tinfo->tran_time = bpf_ktime_get_ns() / 1000;
     return 0;
 }
-static __always_inline int __ip_send_skb(struct sk_buff *skb) {
+static __always_inline int __ip_send_skb(struct sk_buff *skb)
+{
     if (!udp_info || skb == NULL)
         return 0;
     struct iphdr *ip = skb_to_iphdr(skb);
@@ -99,17 +105,19 @@ static __always_inline int __ip_send_skb(struct sk_buff *skb) {
     FILTER
     struct ktime_info *tinfo, zero = {0};
     tinfo = bpf_map_lookup_elem(&timestamps, &pkt_tuple);
-    if (tinfo == NULL) {
+    if (tinfo == NULL)
+    {
         return 0;
     }
     struct udp_message *message;
     struct udp_message *udp_message =
         bpf_map_lookup_elem(&timestamps, &pkt_tuple);
     message = bpf_ringbuf_reserve(&udp_rb, sizeof(*message), 0);
-    if (!message) {
+    if (!message)
+    {
         return 0;
     }
-    udp = skb_to_udphdr(skb);
+   
     message->tran_time = bpf_ktime_get_ns() / 1000 - tinfo->tran_time;
     message->saddr = pkt_tuple.saddr;
     message->daddr = pkt_tuple.daddr;
@@ -120,7 +128,8 @@ static __always_inline int __ip_send_skb(struct sk_buff *skb) {
     bpf_ringbuf_submit(message, 0);
     return 0;
 }
-static __always_inline int process_dns_packet(struct sk_buff *skb, int rx) {
+static __always_inline int process_dns_packet(struct sk_buff *skb, int rx)
+{
     if (skb == NULL)
         return 0;
     u16 QR_flags;
@@ -154,31 +163,42 @@ static __always_inline int process_dns_packet(struct sk_buff *skb, int rx) {
     1000 0000 0000 0000
     &运算提取最高位QR， QR=1 Response QR=0 Request
     */
-    if (QR_flags & 0x8000) { // 响应
+    if (QR_flags & 0x8000)
+    { // 响应
         count_ptr = bpf_map_lookup_elem(&dns_response_count, &key);
-        if (count_ptr) {
+        if (count_ptr)
+        {
             response_count = *count_ptr + 1;
-        } else {
+        }
+        else
+        {
             response_count = 1;
         }
         bpf_map_update_elem(&dns_response_count, &key, &response_count,
                             BPF_ANY);
         // 保留映射中的请求计数值
         count_ptr = bpf_map_lookup_elem(&dns_request_count, &key);
-        if (count_ptr) {
+        if (count_ptr)
+        {
             request_count = *count_ptr;
         }
-    } else { // 请求
+    }
+    else
+    { // 请求
         count_ptr = bpf_map_lookup_elem(&dns_request_count, &key);
-        if (count_ptr) {
+        if (count_ptr)
+        {
             request_count = *count_ptr + 1;
-        } else {
+        }
+        else
+        {
             request_count = 1;
         }
         bpf_map_update_elem(&dns_request_count, &key, &request_count, BPF_ANY);
         // 保留映射中的响应计数值
         count_ptr = bpf_map_lookup_elem(&dns_response_count, &key);
-        if (count_ptr) {
+        if (count_ptr)
+        {
             response_count = *count_ptr;
         }
     }
@@ -197,10 +217,12 @@ static __always_inline int process_dns_packet(struct sk_buff *skb, int rx) {
     bpf_ringbuf_submit(message, 0);
     return 0;
 }
-static __always_inline int __dns_rcv(struct sk_buff *skb) {
+static __always_inline int __dns_rcv(struct sk_buff *skb)
+{
     return process_dns_packet(skb, 0); // 0 收
 }
 
-static __always_inline int __dns_send(struct sk_buff *skb) {
+static __always_inline int __dns_send(struct sk_buff *skb)
+{
     return process_dns_packet(skb, 1); // 1 发
 }

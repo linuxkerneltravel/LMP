@@ -89,7 +89,6 @@ float calculate_ewma(float new_value, float old_ewma);
 int process_redis_first(char flag, char *message);
 int create_ring_buffer(struct ring_buffer **rb, int map_fd, void *print_fn, const char *name);
 int poll_ring_buffers(struct ring_buffer *buffers[], int num_buffers, int timeout_ms);
-
 void print_domain_name(const unsigned char *data, char *output);
-
+int should_filter_t(const char *src, const char *dst, unsigned short sport, unsigned short dport,const char *filter_src_ip, const char *filter_dst_ip, unsigned short filter_sport, unsigned short filter_dport);
 #endif

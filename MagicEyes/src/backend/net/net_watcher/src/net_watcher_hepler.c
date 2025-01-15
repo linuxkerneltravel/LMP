@@ -29,6 +29,107 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+int should_filter_t(const char *src, const char *dst, unsigned short sport, unsigned short dport,
+                         const char *filter_src_ip, const char *filter_dst_ip, unsigned short filter_sport, unsigned short filter_dport)
+{
+    // 未指定任何条件
+    if (!filter_src_ip && !filter_dst_ip && filter_sport == 0 && filter_dport == 0)
+    {
+        return 1;
+    }
+
+    // 只指定源IP
+    if (filter_src_ip && !filter_dst_ip && filter_sport == 0 && filter_dport == 0)
+    {
+        return strcmp(src, filter_src_ip) == 0;
+    }
+
+    // 只指定目的IP
+    if (!filter_src_ip && filter_dst_ip && filter_sport == 0 && filter_dport == 0)
+    {
+        return strcmp(dst, filter_dst_ip) == 0;
+    }
+
+    // 只指定源端口
+    if (!filter_src_ip && !filter_dst_ip && filter_sport != 0 && filter_dport == 0)
+    {
+        return sport == filter_sport;
+    }
+
+    // 只指定目的端口
+    if (!filter_src_ip && !filter_dst_ip && filter_sport == 0 && filter_dport != 0)
+    {
+        return dport == filter_dport;
+    }
+
+    // 同时指定源IP和目的IP
+    if (filter_src_ip && filter_dst_ip && filter_sport == 0 && filter_dport == 0)
+    {
+        return strcmp(src, filter_src_ip) == 0 && strcmp(dst, filter_dst_ip) == 0;
+    }
+
+    // 同时指定源IP和源端口
+    if (filter_src_ip && !filter_dst_ip && filter_sport != 0 && filter_dport == 0)
+    {
+        return strcmp(src, filter_src_ip) == 0 && sport == filter_sport;
+    }
+
+    // 同时指定源IP和目的端口
+    if (filter_src_ip && !filter_dst_ip && filter_sport == 0 && filter_dport != 0)
+    {
+        return strcmp(src, filter_src_ip) == 0 && dport == filter_dport;
+    }
+
+    // 同时指定目的IP和源端口
+    if (!filter_src_ip && filter_dst_ip && filter_sport != 0 && filter_dport == 0)
+    {
+        return strcmp(dst, filter_dst_ip) == 0 && sport == filter_sport;
+    }
+
+    // 同时指定目的IP和目的端口
+    if (!filter_src_ip && filter_dst_ip && filter_sport == 0 && filter_dport != 0)
+    {
+        return strcmp(dst, filter_dst_ip) == 0 && dport == filter_dport;
+    }
+
+    // 同时指定源端口和目的端口
+    if (!filter_src_ip && !filter_dst_ip && filter_sport != 0 && filter_dport != 0)
+    {
+        return sport == filter_sport && dport == filter_dport;
+    }
+
+    // 同时指定源IP、目的IP和源端口
+    if (filter_src_ip && filter_dst_ip && filter_sport != 0 && filter_dport == 0)
+    {
+        return strcmp(src, filter_src_ip) == 0 && strcmp(dst, filter_dst_ip) == 0 && sport == filter_sport;
+    }
+
+    // 同时指定源IP、目的IP和目的端口
+    if (filter_src_ip && filter_dst_ip && filter_sport == 0 && filter_dport != 0)
+    {
+        return strcmp(src, filter_src_ip) == 0 && strcmp(dst, filter_dst_ip) == 0 && dport == filter_dport;
+    }
+
+    // 同时指定源IP、源端口和目的端口
+    if (filter_src_ip && !filter_dst_ip && filter_sport != 0 && filter_dport != 0)
+    {
+        return strcmp(src, filter_src_ip) == 0 && sport == filter_sport && dport == filter_dport;
+    }
+
+    // 同时指定目的IP、源端口和目的端口
+    if (!filter_src_ip && filter_dst_ip && filter_sport != 0 && filter_dport != 0)
+    {
+        return strcmp(dst, filter_dst_ip) == 0 && sport == filter_sport && dport == filter_dport;
+    }
+
+    // 同时指定源IP、目的IP、源端口和目的端口
+    if (filter_src_ip && filter_dst_ip && filter_sport != 0 && filter_dport != 0)
+    {
+        return strcmp(src, filter_src_ip) == 0 && strcmp(dst, filter_dst_ip) == 0 && sport == filter_sport && dport == filter_dport;
+    }
+
+    return 0;
+}
 
 int should_filter(const char *src, const char *dst, const char *filter_src_ip, const char *filter_dst_ip)
 {

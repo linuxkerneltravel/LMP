@@ -114,7 +114,6 @@ static const struct argp_option opts[] = {
     {NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help"},
     {}};
 
-// static u64 sample_period = TIME_THRESHOLD_NS;
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
     char *end;
@@ -744,7 +743,7 @@ static int print_packet(void *ctx, void *packet_info, size_t size)
     unsigned int daddr = pack_info->daddr;
     inet_ntop(AF_INET, &saddr, s_str, sizeof(s_str));
     inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
-    if (!should_filter(s_str, d_str, src_ip, dst_ip))
+    if (!should_filter_t(s_str, d_str, pack_info->sport, pack_info->dport, src_ip, dst_ip, sport, dport))
     {
         return 0;
     }
@@ -841,12 +840,10 @@ static int print_udp(void *ctx, void *packet_info, size_t size)
 
     inet_ntop(AF_INET, &saddr, s_str, sizeof(s_str));
     inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
-
-    if (!should_filter(s_str, d_str, src_ip, dst_ip))
+    if (!should_filter_t(s_str, d_str, pack_info->sport, pack_info->dport, src_ip, dst_ip, sport, dport))
     {
         return 0;
     }
-
     printf("%-20s %-20u %-20s %-20u %-20llu %-20d %-20d\n",
            s_str, pack_info->sport, d_str, pack_info->dport,
            pack_info->tran_time, pack_info->rx, pack_info->len);
@@ -857,7 +854,6 @@ static int print_udp(void *ctx, void *packet_info, size_t size)
         if (flag)
             printf("%-15s", "abnormal data");
     }
-    printf("\n");
     return 0;
 }
 
@@ -882,7 +878,7 @@ static int print_netfilter(void *ctx, void *packet_info, size_t size)
     inet_ntop(AF_INET, &saddr, s_str, sizeof(s_str));
     inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
 
-    if (!should_filter(s_str, d_str, src_ip, dst_ip))
+    if (!should_filter_t(s_str, d_str, pack_info->sport, pack_info->dport, src_ip, dst_ip, sport, dport))
     {
         return 0;
     }
@@ -928,7 +924,7 @@ static int print_tcpstate(void *ctx, void *packet_info, size_t size)
     unsigned int daddr = pack_info->daddr;
     inet_ntop(AF_INET, &saddr, s_str, sizeof(s_str));
     inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
-    if (!should_filter(s_str, d_str, src_ip, dst_ip))
+    if (!should_filter_t(s_str, d_str, pack_info->sport, pack_info->dport, src_ip, dst_ip, sport, dport))
     {
         return 0;
     }
@@ -1049,7 +1045,7 @@ static int print_kfree(void *ctx, void *packet_info, size_t size)
     unsigned int daddr = pack_info->daddr;
     inet_ntop(AF_INET, &saddr, s_str, sizeof(s_str));
     inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
-    if (!should_filter(s_str, d_str, src_ip, dst_ip))
+    if (!should_filter_t(s_str, d_str, pack_info->sport, pack_info->dport, src_ip, dst_ip, sport, dport))
     {
         return 0;
     }
@@ -1320,7 +1316,7 @@ static int print_rate(void *ctx, void *data, size_t size)
     inet_ntop(AF_INET, &saddr, s_str, sizeof(s_str));
     inet_ntop(AF_INET, &daddr, d_str, sizeof(d_str));
 
-    if (!should_filter(s_str, d_str, src_ip, dst_ip))
+    if (!should_filter_t(s_str, d_str, pack_info->skbap.sport, pack_info->skbap.dport, src_ip, dst_ip, sport, dport))
     {
         return 0;
     }
@@ -1655,7 +1651,7 @@ int main(int argc, char **argv)
             }
         }
 
-         gettimeofday(&end, NULL);
+        gettimeofday(&end, NULL);
         if (overrun_time)
         {
             u32 key = 0;

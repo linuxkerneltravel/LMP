@@ -29,8 +29,9 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
-int should_filter_t(const char *src, const char *dst, unsigned short sport, unsigned short dport,
-                         const char *filter_src_ip, const char *filter_dst_ip, unsigned short filter_sport, unsigned short filter_dport)
+
+int match_filter(const char *src, const char *dst, unsigned short sport, unsigned short dport,
+                 const char *filter_src_ip, const char *filter_dst_ip, unsigned short filter_sport, unsigned short filter_dport)
 {
     // 未指定任何条件
     if (!filter_src_ip && !filter_dst_ip && filter_sport == 0 && filter_dport == 0)
@@ -130,42 +131,16 @@ int should_filter_t(const char *src, const char *dst, unsigned short sport, unsi
 
     return 0;
 }
+int should_filter_t(const char *src, const char *dst, unsigned short sport, unsigned short dport,
+                    const char *filter_src_ip, const char *filter_dst_ip, unsigned short filter_sport, unsigned short filter_dport)
+{
+    return match_filter(src, dst, sport, dport, filter_src_ip, filter_dst_ip, filter_sport, filter_dport);
+}
 
 int should_filter(const char *src, const char *dst, const char *filter_src_ip, const char *filter_dst_ip)
 {
-    // 均未指定
-    if (!filter_src_ip && !filter_dst_ip)
-    {
-        return 1;
-    }
 
-    // 指定源IP和目的IP
-    if (filter_src_ip && filter_dst_ip)
-    {
-        if (strcmp(src, filter_src_ip) == 0 && strcmp(dst, filter_dst_ip) == 0)
-        {
-            return 1;
-        }
-    }
-    // 只指定源IP
-    else if (filter_src_ip)
-    {
-
-        if (strcmp(src, filter_src_ip) == 0)
-        {
-            return 1;
-        }
-    }
-    // 只指定目的IP
-    else if (filter_dst_ip)
-    {
-        if (strcmp(dst, filter_dst_ip) == 0)
-        {
-            return 1;
-        }
-    }
-
-    return 0;
+    return match_filter(src, dst, 0, 0, filter_src_ip, filter_dst_ip, 0, 0);
 }
 void print_logo()
 {
@@ -207,7 +182,7 @@ void bytes_to_str(char *str, unsigned long long num)
         sprintf(str, "%llu", num);
     }
 }
-//LRU
+// LRU
 struct SymbolEntry find_in_cache(unsigned long int addr)
 {
     // 查找地址是否在快表中

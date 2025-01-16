@@ -37,7 +37,7 @@
 static volatile bool exiting = false;
 struct packet_count proto_stats[256] = {0};
 static struct reset_event_t event_store[MAX_EVENTS];
-int event_count = 0, num_symbols = 0, cache_size = 0, map_fd;
+int event_count = 0, num_symbols = 0, cache_size = 0, map_fd,count[NUM_LAYERS] = {0};
 static u64 sample_period = TIME_THRESHOLD_NS, rst_count = 0;
 static char binary_path[64] = "", *dst_ip = NULL, *src_ip = NULL;
 static int sport = 0, dport = 0; // for filter
@@ -50,13 +50,7 @@ static int all_conn = 0, err_packet = 0, extra_conn_info = 0, layer_time = 0,
 struct SymbolEntry symbols[300000];
 struct SymbolEntry cache[CACHEMAXSIZE];
 float ewma_values[NUM_LAYERS] = {0};
-int count[NUM_LAYERS] = {0};
 
-struct ring_buffer_info
-{
-    struct ring_buffer *rb;
-    const char *name;
-};
 
 // 定义一个数组存储所有的 ring_buffer 信息
 struct ring_buffer_info ring_buffers[] = {

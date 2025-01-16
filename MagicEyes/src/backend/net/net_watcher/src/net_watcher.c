@@ -37,7 +37,7 @@
 static volatile bool exiting = false;
 struct packet_count proto_stats[256] = {0};
 static struct reset_event_t event_store[MAX_EVENTS];
-int event_count = 0, num_symbols = 0, cache_size = 0, map_fd,count[NUM_LAYERS] = {0};
+int event_count = 0, num_symbols = 0, cache_size = 0, map_fd, count[NUM_LAYERS] = {0};
 static u64 sample_period = TIME_THRESHOLD_NS, rst_count = 0;
 static char binary_path[64] = "", *dst_ip = NULL, *src_ip = NULL;
 static int sport = 0, dport = 0; // for filter
@@ -50,7 +50,6 @@ static int all_conn = 0, err_packet = 0, extra_conn_info = 0, layer_time = 0,
 struct SymbolEntry symbols[300000];
 struct SymbolEntry cache[CACHEMAXSIZE];
 float ewma_values[NUM_LAYERS] = {0};
-
 
 // 定义一个数组存储所有的 ring_buffer 信息
 struct ring_buffer_info ring_buffers[] = {
@@ -1449,103 +1448,28 @@ void print_top_5_keys()
     free(pairs);
 }
 
+
 // free
-static void free_ring_buffers()
-{
-    for (size_t i = 0; i < sizeof(ring_buffers) / sizeof(ring_buffers[0]); i++)
-    {
-        if (ring_buffers[i].rb)
-        {
-            ring_buffer__free(ring_buffers[i].rb);
-        }
-    }
-}
-
-// create
-static int create_ring_buffers(struct net_watcher_bpf *skel)
-{
-    int err = 0;
-    for (size_t i = 0; i < sizeof(ring_buffers) / sizeof(ring_buffers[0]); i++)
-    {
-        struct ring_buffer_info *info = &ring_buffers[i];
-
-        // 根据 BPF Map 的 fd 创建 ring buffer
-        if (strcmp(info->name, "rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), print_packet, NULL, NULL);
-        }
-        else if (strcmp(info->name, "udp_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.udp_rb), print_udp, NULL, NULL);
-        }
-        else if (strcmp(info->name, "netfilter_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.netfilter_rb), print_netfilter, NULL, NULL);
-        }
-        else if (strcmp(info->name, "kfree_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.kfree_rb), print_kfree, NULL, NULL);
-        }
-        else if (strcmp(info->name, "icmp_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.icmp_rb), print_icmptime, NULL, NULL);
-        }
-        else if (strcmp(info->name, "tcp_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.tcp_rb), print_tcpstate, NULL, NULL);
-        }
-        else if (strcmp(info->name, "dns_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.dns_rb), print_dns, NULL, NULL);
-        }
-        else if (strcmp(info->name, "trace_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.trace_rb), print_trace, NULL, NULL);
-        }
-        else if (strcmp(info->name, "mysql_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.mysql_rb), print_mysql, NULL, NULL);
-        }
-        else if (strcmp(info->name, "redis_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.redis_rb), print_redis, NULL, NULL);
-        }
-        else if (strcmp(info->name, "redis_stat_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.redis_stat_rb), print_redis_stat, NULL, NULL);
-        }
-        else if (strcmp(info->name, "rtt_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.rtt_rb), print_rtt, NULL, NULL);
-        }
-        else if (strcmp(info->name, "events") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.events), print_rst, NULL, NULL);
-        }
-        else if (strcmp(info->name, "port_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.port_rb), print_protocol_count, NULL, NULL);
-        }
-        else if (strcmp(info->name, "rate_rb") == 0)
-        {
-            info->rb = ring_buffer__new(bpf_map__fd(skel->maps.rate_rb), print_rate, NULL, NULL);
-        }
-
-        if (!info->rb)
-        {
-            fprintf(stderr, "Failed to create ring buffer for %s\n", info->name);
-            err = -1;
-            break;
-        }
-    }
-    return err;
-}
-
 int main(int argc, char **argv)
 {
+
+    struct ring_buffer *rb = NULL;
+    struct ring_buffer *udp_rb = NULL;
+    struct ring_buffer *netfilter_rb = NULL;
+    struct ring_buffer *kfree_rb = NULL;
+    struct ring_buffer *icmp_rb = NULL;
+    struct ring_buffer *tcp_rb = NULL;
+    struct ring_buffer *dns_rb = NULL;
+    struct ring_buffer *trace_rb = NULL;
+    struct ring_buffer *mysql_rb = NULL;
+    struct ring_buffer *redis_rb = NULL;
+    struct ring_buffer *redis_stat_rb = NULL;
+    struct ring_buffer *rtt_rb = NULL;
+    struct ring_buffer *events = NULL;
+    struct ring_buffer *port_rb = NULL;
+    struct ring_buffer *rate_rb = NULL;
     struct net_watcher_bpf *skel;
     int err;
-
     /* Parse command line arguments */
     if (argc > 1)
     {
@@ -1556,21 +1480,20 @@ int main(int argc, char **argv)
 
     // libbpf_set_print(libbpf_print_fn);
 
-    // Signal handling for graceful exit
+    /* Cleaner handling of Ctrl-C */
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
-
-    // Open and load BPF skeleton
+    /* Open load and verify BPF application */
     skel = net_watcher_bpf__open();
     if (!skel)
     {
         fprintf(stderr, "Failed to open BPF skeleton\n");
         return 1;
     }
-
-    // Parameterize BPF code
+    /* Parameterize BPF code */
     set_rodata_flags(skel);
     set_disable_load(skel);
+
     if (addr_to_func)
         readallsym();
     err = net_watcher_bpf__load(skel);
@@ -1579,7 +1502,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to load and verify BPF skeleton\n");
         goto cleanup;
     }
-
     /* Attach tracepoint handler */
     if (mysql_info)
     {
@@ -1617,34 +1539,164 @@ int main(int argc, char **argv)
     print_logo();
 
     print_header(mode);
-    // Create ring buffers
-    err = create_ring_buffers(skel);
-    if (err)
+
+    udp_rb =
+        ring_buffer__new(bpf_map__fd(skel->maps.udp_rb), print_udp, NULL, NULL);
+    if (!udp_rb)
     {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(udp)\n");
+        goto cleanup;
+    }
+    netfilter_rb = ring_buffer__new(bpf_map__fd(skel->maps.netfilter_rb),
+                                    print_netfilter, NULL, NULL);
+    if (!netfilter_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(netfilter)\n");
+        goto cleanup;
+    }
+    kfree_rb = ring_buffer__new(bpf_map__fd(skel->maps.kfree_rb), print_kfree,
+                                NULL, NULL);
+    if (!kfree_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(kfree)\n");
+        goto cleanup;
+    }
+    icmp_rb = ring_buffer__new(bpf_map__fd(skel->maps.icmp_rb), print_icmptime,
+                               NULL, NULL);
+    if (!icmp_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(icmp)\n");
+        goto cleanup;
+    }
+    tcp_rb = ring_buffer__new(bpf_map__fd(skel->maps.tcp_rb), print_tcpstate,
+                              NULL, NULL);
+    if (!tcp_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(tcp)\n");
+        goto cleanup;
+    }
+    dns_rb =
+        ring_buffer__new(bpf_map__fd(skel->maps.dns_rb), print_dns, NULL, NULL);
+    if (!dns_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(dns)\n");
+        goto cleanup;
+    }
+    trace_rb = ring_buffer__new(bpf_map__fd(skel->maps.trace_rb), print_trace,
+                                NULL, NULL);
+    if (!trace_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(trace)\n");
+        goto cleanup;
+    }
+    mysql_rb = ring_buffer__new(bpf_map__fd(skel->maps.mysql_rb), print_mysql,
+                                NULL, NULL);
+    if (!mysql_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(trace)\n");
+        goto cleanup;
+    }
+    redis_rb = ring_buffer__new(bpf_map__fd(skel->maps.redis_rb), print_redis,
+                                NULL, NULL);
+    if (!redis_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(trace)\n");
+        goto cleanup;
+    }
+    redis_stat_rb = ring_buffer__new(bpf_map__fd(skel->maps.redis_stat_rb), print_redis_stat,
+                                     NULL, NULL);
+    if (!redis_stat_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(trace)\n");
+        goto cleanup;
+    }
+    rtt_rb =
+        ring_buffer__new(bpf_map__fd(skel->maps.rtt_rb), print_rtt, NULL, NULL);
+    if (!rtt_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(connect_rb)\n");
+        goto cleanup;
+    }
+    events =
+        ring_buffer__new(bpf_map__fd(skel->maps.events), print_rst, NULL, NULL);
+    if (!events)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(rst_rb)\n");
         goto cleanup;
     }
 
-    // Polling and event handling loop
+    port_rb = ring_buffer__new(bpf_map__fd(skel->maps.port_rb),
+                               print_protocol_count, NULL, NULL);
+    if (!port_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(trace)\n");
+        goto cleanup;
+    }
+
+    rate_rb = ring_buffer__new(bpf_map__fd(skel->maps.rate_rb),
+                               print_rate, NULL, NULL);
+    if (!rate_rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(trace)\n");
+        goto cleanup;
+    }
+    /* Set up ring buffer polling */
+    rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), print_packet, NULL, NULL);
+    if (!rb)
+    {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer(packet)\n");
+        goto cleanup;
+    }
+
+    // open_log_files();
     struct timeval start, end;
     gettimeofday(&start, NULL);
+    /* Process events */
     while (!exiting)
     {
-        // Poll all ring buffers
-        for (size_t i = 0; i < sizeof(ring_buffers) / sizeof(ring_buffers[0]); i++)
+        err = ring_buffer__poll(rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(udp_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(netfilter_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(kfree_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(icmp_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(tcp_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(dns_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(trace_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(mysql_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(redis_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(rtt_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(events, 100 /* timeout, ms */);
+        err = ring_buffer__poll(port_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(redis_stat_rb, 100 /* timeout, ms */);
+        err = ring_buffer__poll(rate_rb, 100 /* timeout, ms */);
+        print_conns(skel);
+        sleep(1);
+        /* Ctrl-C will cause -EINTR */
+        if (err == -EINTR)
         {
-            err = ring_buffer__poll(ring_buffers[i].rb, 100); // Timeout in ms
-            if (err == -EINTR)
-            {
-                err = 0;
-                break;
-            }
-            if (err < 0)
-            {
-                printf("Error polling ring buffer for %s: %d\n", ring_buffers[i].name, err);
-                break;
-            }
+            err = 0;
+            break;
         }
-
+        if (err < 0)
+        {
+            printf("Error polling perf buffer: %d\n", err);
+            break;
+        }
         gettimeofday(&end, NULL);
         if (overrun_time)
         {
@@ -1688,8 +1740,22 @@ int main(int argc, char **argv)
         }
     }
 cleanup:
-    // Release ring buffers and cleanup BPF
-    free_ring_buffers();
+        ring_buffer__free(rb);
+    ring_buffer__free(udp_rb);
+    ring_buffer__free(netfilter_rb);
+    ring_buffer__free(kfree_rb);
+    ring_buffer__free(icmp_rb);
+    ring_buffer__free(tcp_rb);
+    ring_buffer__free(dns_rb);
+    ring_buffer__free(trace_rb);
+    ring_buffer__free(mysql_rb);
+    ring_buffer__free(redis_rb);
+    ring_buffer__free(rtt_rb);
+    ring_buffer__free(events);
+    ring_buffer__free(port_rb);
+    ring_buffer__free(redis_stat_rb);
+    ring_buffer__free(rate_rb);
     net_watcher_bpf__destroy(skel);
     return err < 0 ? -err : 0;
 }
+

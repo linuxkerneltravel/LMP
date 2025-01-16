@@ -58,6 +58,7 @@ typedef unsigned long long u64;
 #define PID 32
 #define NS(x) ((x) * 1000000000LL) // 1 秒等于 10^9 纳秒
 #define TIME_THRESHOLD_NS NS(10) 
+#define UDP_HEAD 8
 
 typedef u64 stack_trace_t[MAX_STACK_DEPTH];
 

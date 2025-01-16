@@ -65,7 +65,7 @@ static __always_inline int udp_enqueue_schedule_skb(struct sock *sk,
     message->sport = pkt_tuple.sport;
     message->tran_time = bpf_ktime_get_ns() / 1000 - tinfo->tran_time;
     message->rx = 1; // 收包
-    message->len = __bpf_ntohs(BPF_CORE_READ(udp, len));
+    message->len = __bpf_ntohs(BPF_CORE_READ(udp, len)) - UDP_HEAD;
     bpf_ringbuf_submit(message, 0);
     return 0;
 }
@@ -117,14 +117,14 @@ static __always_inline int __ip_send_skb(struct sk_buff *skb)
     {
         return 0;
     }
-   
+
     message->tran_time = bpf_ktime_get_ns() / 1000 - tinfo->tran_time;
     message->saddr = pkt_tuple.saddr;
     message->daddr = pkt_tuple.daddr;
     message->sport = pkt_tuple.sport;
     message->dport = pkt_tuple.dport;
     message->rx = 0; // 发包
-    message->len = __bpf_ntohs(BPF_CORE_READ(udp, len));
+    message->len = __bpf_ntohs(BPF_CORE_READ(udp, len)) - UDP_HEAD;
     bpf_ringbuf_submit(message, 0);
     return 0;
 }

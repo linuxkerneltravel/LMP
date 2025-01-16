@@ -51,24 +51,6 @@ struct SymbolEntry symbols[300000];
 struct SymbolEntry cache[CACHEMAXSIZE];
 float ewma_values[NUM_LAYERS] = {0};
 
-// 定义一个数组存储所有的 ring_buffer 信息
-struct ring_buffer_info ring_buffers[] = {
-    {NULL, "rb"},
-    {NULL, "udp_rb"},
-    {NULL, "netfilter_rb"},
-    {NULL, "kfree_rb"},
-    {NULL, "icmp_rb"},
-    {NULL, "tcp_rb"},
-    {NULL, "dns_rb"},
-    {NULL, "trace_rb"},
-    {NULL, "mysql_rb"},
-    {NULL, "redis_rb"},
-    {NULL, "redis_stat_rb"},
-    {NULL, "rtt_rb"},
-    {NULL, "events"},
-    {NULL, "port_rb"},
-    {NULL, "rate_rb"}};
-
 static const char argp_program_doc[] = "Watch tcp/ip in network subsystem \n";
 static const struct argp_option opts[] = {
     {"all", 'a', 0, 0, "set to trace CLOSED connection"},
@@ -1448,7 +1430,6 @@ void print_top_5_keys()
     free(pairs);
 }
 
-
 // free
 int main(int argc, char **argv)
 {
@@ -1740,7 +1721,7 @@ int main(int argc, char **argv)
         }
     }
 cleanup:
-        ring_buffer__free(rb);
+    ring_buffer__free(rb);
     ring_buffer__free(udp_rb);
     ring_buffer__free(netfilter_rb);
     ring_buffer__free(kfree_rb);
@@ -1758,4 +1739,3 @@ cleanup:
     net_watcher_bpf__destroy(skel);
     return err < 0 ? -err : 0;
 }
-

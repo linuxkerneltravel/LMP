@@ -324,9 +324,4 @@ struct tcp_args_s {
     u64 sample_period; 
 };
 
-struct ring_buffer_info
-{
-    struct ring_buffer *rb;
-    const char *name;
-};
 #endif /* __NET_WATCHER_H */

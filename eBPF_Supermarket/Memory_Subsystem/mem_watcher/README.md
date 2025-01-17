@@ -86,7 +86,7 @@ else
 BZS_APPS := 
 ```
 再次执行make，发现报错为 "vmlinux.h file not find"，如下：
-   ![alt text](/docs/image/16.png)
+   ![alt text](../docs/image/16.png)
 
 执行以下命令,生成vmlinux.h文件
 ```
@@ -129,7 +129,7 @@ registry = "git://crates.rustcc.cn/crates.io-index"
 ```
    重新安装还是会报错：
 
-   ![alt text](/docs/image/17.png)
+   ![alt text](../docs/image/17.png)
 
    在 `~/.cargo/config` 文件中添加以下内容，即可解决：
    ```
@@ -137,7 +137,7 @@ registry = "git://crates.rustcc.cn/crates.io-index"
 git-fetch-with-cli = true
 ```
 再次make编译完成，生成二进制文件 mem_watcher，并能正常运行。
-   ![alt text](/docs/image/18.png)
+   ![alt text](../docs/image/18.png)
 
 # 工具的使用方法说明
 

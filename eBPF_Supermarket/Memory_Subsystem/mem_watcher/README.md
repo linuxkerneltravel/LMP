@@ -62,7 +62,7 @@
    make
    ```
    make后没有编译生成任何的二进制文件，只打印了logo，效果如下：
-   ![alt text](/docs/image/15.png)
+   ![alt text](../docs/image/15.png)
 
 打开makefile，检查makefile逻辑，代码如下：
 ```

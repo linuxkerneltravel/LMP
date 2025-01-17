@@ -14,10 +14,10 @@ PARAM4=$4
 OTHER_ARGS=${@:5} # 从第5个参数开始的所有额外参数
 
 # 构建路径
-TARGET_DIR="../../build/src/backend/${PARAM1}/${PARAM2}/${PARAM3}"
+TARGET_DIR="../backend/${PARAM1}/${PARAM2}/bin"
 
 # 构建命令
-COMMAND="./data-visual collect ${TARGET_DIR} ${PARAM4} ${OTHER_ARGS}"
+COMMAND="sudo ./data-visual collect ${TARGET_DIR}/${PARAM3} ${PARAM4} ${OTHER_ARGS}"
 
 # 显示即将执行的命令（可选）
 echo "Executing command: ${COMMAND}"

@@ -88,7 +88,7 @@ magic_eyes_cli具有2个固定命令， 即
 ### 4. 例程
 
 ```bash
-magic_eyes_cli process cpu_watcher -h
+./magic_eyes_cli process cpu_watcher -h
 # <------------------ 自动补全 | 非自动补全
 ```
 

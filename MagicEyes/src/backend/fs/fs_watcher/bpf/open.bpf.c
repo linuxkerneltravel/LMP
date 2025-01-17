@@ -1,18 +1,19 @@
-#define BPF_NO_GLOBAL_DATA
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "fs_watcher.h"
 
-#define TASK_COMM_LEN 100
-#define path_size 256
+char LICENSE[] SEC("license") = "GPL";
+
+#define O_CREAT  0x0200  // 手动定义 O_CREAT 标志的常量值
+#define O_WRONLY    01  /* open for writing only */
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
 	__type(key, pid_t);
-	__type(value, char[TASK_COMM_LEN]);
+	__type(value, struct event_open);
 } data SEC(".maps");
 
 struct {
@@ -20,52 +21,84 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } rb SEC(".maps"); // 环形缓冲区
 
-
 SEC("tracepoint/syscalls/sys_enter_openat")
 int do_syscall_trace(struct trace_event_raw_sys_enter *ctx)
 {
-	struct event_open *e;
-    char comm[TASK_COMM_LEN];
-    bpf_get_current_comm(&comm,sizeof(comm));
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
+	struct event_open e = {};
+	pid_t pid = bpf_get_current_pid_tgid() >> 32;
+	e.pid = pid;
+	e.dfd = ctx->args[0];// 目录文件描述符
+	bpf_probe_read_user_str(e.filename, sizeof(e.filename), (const char *)ctx->args[1]);  // 文件路径
+ 	e.flags = ctx->args[2];  // 打开标志
+	
+	// 如果包含 O_CREAT 标志，则标记为文件创建
+	if (e.flags & O_CREAT || (e.flags & O_WRONLY) ) {
+        e.is_created = true;
+    } else {
+        e.is_created = false;
+    }
 
-	char filename[path_size];
-	struct task_struct *task = (struct task_struct *)bpf_get_current_task(),
-			   *real_parent;
-	if (task == NULL) {
-		bpf_printk("task\n");
-		bpf_ringbuf_discard(e, 0);
-		return 0;
-	}
-	int pid = bpf_get_current_pid_tgid() >> 32, tgid;
-
-    bpf_map_update_elem(&data, &pid, &comm, BPF_ANY);
-
-	int ppid = BPF_CORE_READ(task, real_parent, tgid);
-
-	bpf_probe_read_str(e->path_name_, sizeof(e->path_name_),
-			   (void *)(ctx->args[1]));
-
-	bpf_printk("path name: %s,pid:%d,ppid:%d\n", e->path_name_, pid, ppid);
-
-	struct fdtable *fdt = BPF_CORE_READ(task, files, fdt);
-	if (fdt == NULL) {
-		bpf_printk("fdt\n");
-		bpf_ringbuf_discard(e, 0);
-		return 0;
-	}
-
-	unsigned int i = 0, count = 0, n = BPF_CORE_READ(fdt, max_fds);
-	bpf_printk("n:%d\n", n);
-
-	e->n_ = n;
-	e->pid_ = pid;
-
-	bpf_ringbuf_submit(e, 0);
-
+	bpf_map_update_elem(&data,&pid,&e,BPF_ANY);
 	return 0;
 }
 
-char LICENSE[] SEC("license") = "GPL";
+// 跟踪文件描述符分配过程
+SEC("kprobe/get_unused_fd_flags")
+int kprobe_get_unused_fd_flags(struct pt_regs *ctx){
+	pid_t pid = bpf_get_current_pid_tgid() >> 32;
+	struct event_open *e = bpf_map_lookup_elem(&data,&pid);
+	if(!e){
+		bpf_printk("get_unused_fd_flags is failed to found fd\n");
+		return 0;
+	}
+
+	//获取分配的文件描述符
+    e->fd = PT_REGS_RC(ctx);
+
+	bpf_map_update_elem(&data,&pid,e,BPF_ANY);
+	return 0;
+}
+
+// 跟踪 openat 系统调用的退出
+SEC("tracepoint/syscalls/sys_exit_openat")
+int do_syscall_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	pid_t pid = bpf_get_current_pid_tgid() >> 32;
+	struct event_open *e = bpf_map_lookup_elem(&data,&pid);
+	if(!e){
+		bpf_printk("sys_exit_openat is failed to found fd\n");
+		return 0;
+	}
+
+	e->ret = ctx->ret;
+
+	 // 分配 ringbuf 空间
+    struct event_open *new_e = bpf_ringbuf_reserve(&rb, sizeof(*new_e), 0);
+    if (!new_e) {
+        return 0;  // 如果分配失败，提前返回
+    }
+
+	//复制数据
+	new_e->dfd = e->dfd;
+	new_e->flags = e->flags;
+	new_e->fd = e->fd;
+	new_e->ret =e->ret;
+	new_e->is_created = e->is_created;
+	new_e->pid = e->pid;
+
+	// 手动读取文件路径，确保不超过最大长度，并添加 '\0' 结束符
+    int filename_len = 0;
+    while (filename_len < sizeof(new_e->filename) - 1) {
+        char c = 0;
+        // 读取路径中的每个字符
+        bpf_probe_read(&c, sizeof(c), e->filename + filename_len);
+        if (c == '\0') break;  // 如果遇到 null 字符就停止读取
+        new_e->filename[filename_len++] = c;
+    }
+    // 确保字符串以 '\0' 结束
+    new_e->filename[filename_len] = '\0';
+	bpf_printk("Opening file: %s, pid: %d, flags: %d\n", new_e->filename, pid, e->flags);
+
+	bpf_ringbuf_submit(new_e, 0);
+	return 0;
+}

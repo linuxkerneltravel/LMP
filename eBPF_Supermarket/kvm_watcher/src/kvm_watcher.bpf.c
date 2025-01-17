@@ -245,84 +245,20 @@ int BPF_KPROBE(kp_start_sw_timer, struct kvm_lapic *apic) {
     CHECK_PID(vm_pid);
     return trace_start_sw_timer(apic);
 }
-
 //采集容器的系统用调用信息
 SEC("tracepoint/raw_syscalls/sys_enter")
 int tp_container_sys_entry(struct trace_event_raw_sys_enter *args) {
-    //过滤进程
-    if (hostname == NULL || hostname[0] == '\0') {
-        
-        return false; // 提前返回
+     if(is_container_task(hostname)){
+        return trace_container_sys_entry(args);
+    }else{
+        return 0;
     }
-    struct task_struct *task;
-    struct nsproxy *ns;
-    struct uts_namespace *uts;
-    struct data_t data = {};
-    // 获取当前任务的 task_struct
-    task = (struct task_struct *)bpf_get_current_task();
-    
-    // 获取 nsproxy
-    bpf_probe_read_kernel(&ns, sizeof(ns), &task->nsproxy);
-    if (!ns) {
-        return false;
-    }
-    
-    // 获取 uts_namespace
-    bpf_probe_read_kernel(&uts, sizeof(uts), &ns->uts_ns);
-    if (!uts) {
-        return false;
-    }
-    // 读取主机名
-    bpf_probe_read_kernel_str(&data.nodename, sizeof(data.nodename), uts->name.nodename);
-    // 打印主机名
-    
-    for(int i = 0;i<MAX_NODENAME_LEN;i++){
-        if(data.nodename[i] != hostname[i]){
-            return 0;
-        }
-        if(data.nodename[i]=='\0'||hostname[i]=='\0'){
-            break;
-        }
-    }
-    pid_t pid = bpf_get_current_pid_tgid();
-    bpf_map_update_elem(&container_id_map,&pid,&data.nodename,BPF_ANY);
-    return trace_container_sys_entry(args);
 }
 SEC("tracepoint/raw_syscalls/sys_exit")
 int tracepoint__syscalls__sys_exit(struct trace_event_raw_sys_exit *args) {
-    //过滤进程
-    if (hostname == NULL || hostname[0] == '\0') {
-        return false; 
+    if(is_container_task(hostname)){
+        return trace_container_sys_exit(args);
+    }else{
+        return 0;
     }
-    struct task_struct *task;
-    struct nsproxy *ns;
-    struct uts_namespace *uts;
-    struct data_t data = {};
-    // 获取当前任务的 task_struct
-    task = (struct task_struct *)bpf_get_current_task();
-    
-    // 获取 nsproxy
-    bpf_probe_read_kernel(&ns, sizeof(ns), &task->nsproxy);
-    if (!ns) {
-        return false;
-    }
-    
-    // 获取 uts_namespace
-    bpf_probe_read_kernel(&uts, sizeof(uts), &ns->uts_ns);
-    if (!uts) {
-        return false;
-    }
-    // 读取主机名
-    bpf_probe_read_kernel_str(&data.nodename, sizeof(data.nodename), uts->name.nodename);
-    // 打印主机名
-    
-    for(int i = 0;i<MAX_NODENAME_LEN;i++){
-        if(data.nodename[i] != hostname[i]){
-            return 0;
-        }
-        if(data.nodename[i]=='\0'||hostname[i]=='\0'){
-            break;
-        }
-    }
-    return trace_container_sys_exit(args, &rb, e);
 }

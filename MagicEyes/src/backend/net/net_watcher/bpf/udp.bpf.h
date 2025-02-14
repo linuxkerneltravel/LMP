@@ -85,6 +85,16 @@ static __always_inline int __udp_send_skb(struct sk_buff *skb)
     pkt_tuple.tran_flag = UDP;
     FILTER
     struct ktime_info *tinfo, zero = {0};
+
+    /** 注意： 
+     * bpf_printk在老的Linux内核（在kernel 5.15测试）上，只支持三个以内的参数
+     * 可查看： https://github.com/libbpf/libbpf-bootstrap/issues/206
+    */
+    //bpf_printk("udp_send_skb%d %d %d %d", pkt_tuple.saddr, pkt_tuple.daddr,
+    //           pkt_tuple.sport, pkt_tuple.dport);
+    bpf_printk("udp_send_skb s&d addr: %d %d", pkt_tuple.saddr, pkt_tuple.daddr);
+    bpf_printk("udp_send_skb s&d port: %d %d", pkt_tuple.sport, pkt_tuple.dport);
+
     tinfo = (struct ktime_info *)bpf_map_lookup_or_try_init(&timestamps,
                                                             &pkt_tuple, &zero);
     if (tinfo == NULL)

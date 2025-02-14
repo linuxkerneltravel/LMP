@@ -438,7 +438,7 @@ static int print_all()
     return 0;
 }
 
-int count[25]={0};//定义一个count数组，用于汇总schedul()调度时间，以log2(时间间隔)为统计依据；
+int count[25]={0} , cs_flag=0;//定义一个count数组，用于汇总schedul()调度时间，以log2(时间间隔)为统计依据；
 static int handle_event(void *ctx, void *data,unsigned long data_sz)
 {
 	const struct event *e = data;
@@ -449,6 +449,8 @@ static int handle_event(void *ctx, void *data,unsigned long data_sz)
 		i ++;
 	}
 	count[i]++;
+	if(!cs_flag) 
+		cs_flag = 1;
 	return 0;
 }
 static int print_hstgram(int i,int max,int per_len)
@@ -1101,7 +1103,11 @@ int main(int argc, char **argv)
         	    printf("Error polling perf buffer: %d\n", err);
 				break;
 			}
-			histogram();
+    		struct cs_ctrl *cs_ctrl;
+			int ctrl_key = 0 ;
+			if(cs_flag){
+				histogram();
+			}
 		}
 		else if(env.SYSCALL_DELAY){
 			err = ring_buffer__poll(rb, 100 /* timeout, ms */);		//ring_buffer__poll(),轮询打开ringbuf缓冲区。如果有事件，handle_event函数会执行	

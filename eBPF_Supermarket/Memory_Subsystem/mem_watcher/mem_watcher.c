@@ -37,6 +37,7 @@
 #include "memleak.skel.h"
 #include "vmasnap.skel.h"
 #include "drsnoop.skel.h"
+#include "slabrate.skel.h"
 
 #include "mem_watcher.h"
 #include "fraginfo.h"
@@ -122,6 +123,13 @@ struct order_entry
 	struct ctg_info oinfo;
 };
 
+#define OUTPUT_ROWS_LIMIT 10240
+
+static pid_t target_pid = 0;
+static bool clear_screen = true;
+static int output_rows = 20;
+static int count = 99999999;
+
 int compare_entries(const void *a, const void *b)
 {
 	struct order_entry *entryA = (struct order_entry *)a;
@@ -204,7 +212,6 @@ static volatile bool exiting = false;
 		}                                                   \
 	}
 
-// 为 oomkiller 使用的宏，指定 map_name
 #define LOAD_AND_ATTACH_SKELETON_WITH_MAP(skel, event, map_name)                                \
 	do                                                                                         \
 	{                                                                                          \
@@ -230,7 +237,6 @@ static volatile bool exiting = false;
 		}                                                                                      \
 	} while (0)
 
-// 保留原有逻辑的宏
 #define LOAD_AND_ATTACH_SKELETON(skel, event)                                                   \
 	do                                                                                         \
 	{                                                                                          \
@@ -273,7 +279,8 @@ static struct env
     int interval;        // 打印间隔，单位为秒
     int duration;        // 运行时长，单位为秒
     bool part2;          // 是否启用系统内存状态报告的扩展部分
-    bool oomkiller;      // 是否启用oomkiller事件处理
+	bool oomkiller;      // 是否启用oomkiller事件处理
+	bool slabrate;
 
     long choose_pid;     // 选择的进程号
     bool rss;            // 是否打印进程页面信息
@@ -292,8 +299,9 @@ static struct env
     .print_time = false,   // 默认不打印地址申请时间
     .rss = false,          // 默认不打印进程页面信息
     .part2 = false,        // 默认关闭系统内存状态报告的扩展部分
-    .oomkiller = false,    // 默认关闭oomkiller事件处理
-    .choose_pid = 0,       // 默认不选择特定进程
+	.oomkiller = false,    // 默认关闭oomkiller事件处理
+	.slabrate = false,
+	.choose_pid = 0,       // 默认不选择特定进程
     .interval = 1,         // 默认打印间隔为1秒
     .duration = 10,        // 默认持续运行10秒
 };
@@ -343,7 +351,9 @@ static const struct argp_option opts[] = {
 	{"oomkiller", 'o', 0, 0, "print oomkiller (内存不足时被杀死的进程信息)"},
 	{0, 0, 0, 0, "numafraginfo:", 16},
 	{"numafraginfo", 'N', 0, 0, "print numafraginfo"},
-	
+
+	{0, 0, 0, 0, "slabrate:", 17},
+	{"slabrate", 'e', 0, 0, "print slabrate"},
 
 	{NULL, 'h', NULL, OPTION_HIDDEN, "show the full help"},
 	{0},
@@ -409,6 +419,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'N':
 		env.numafraginfo = true;
 		break;
+	case 'e':
+		env.slabrate = true;
+		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
 	}
@@ -449,6 +462,7 @@ static int process_numafraginfo(struct numafraginfo_bpf *skel_numafraginfo);
 static int process_vmasnap(struct vmasnap_bpf *skel_vmasnap);
 static int process_drsnoop(struct drsnoop_bpf *skel_drsnoop);
 static int process_oomkiller(struct oomkiller_bpf *skel_oomkiller);  // 新增的oomkiller处理函数原型
+static int process_slabrate(struct slabrate_bpf *skel_slabrate);
 static int handle_event_oomkiller(void *ctx, void *data, size_t data_sz);  // 新增的oomkiller事件处理函数
 static __u64 adjust_time_to_program_start_time(__u64 first_query_time);
 static int update_addr_times(struct memleak_bpf *skel_memleak);
@@ -469,7 +483,8 @@ int main(int argc, char **argv)
 	struct numafraginfo_bpf *skel_numafraginfo;
     struct vmasnap_bpf *skel_vmasnap;
     struct oomkiller_bpf *skel_oomkiller;
-    struct drsnoop_bpf *skel_drsnoop;
+	struct drsnoop_bpf *skel_drsnoop;
+	struct slabrate_bpf *skel_slabrate;
 
     err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
     if (err)
@@ -537,6 +552,51 @@ int main(int argc, char **argv)
     else if (env.drsnoop)
 	{
 		PROCESS_SKEL(skel_drsnoop, drsnoop);
+	}
+	else if (env.slabrate)
+	{
+		PROCESS_SKEL(skel_slabrate, slabrate);
+	}
+	else
+	{
+		fprintf(stderr, "No valid option was given\n");
+		return 1;
+	}
+
+	if (env.paf)
+	{
+		err = process_paf(skel_paf);
+	}
+	else if (env.pr)
+	{
+		err = process_pr(skel_pr);
+	}
+	else if (env.procstat)
+	{
+		err = process_procstat(skel_procstat);
+	}
+	else if (env.fraginfo)
+	{
+		err = process_fraginfo(skel_fraginfo);
+	}
+	else if(env.numafraginfo){
+		err = process_numafraginfo(skel_numafraginfo);
+	}
+	else if (env.vmasnap)
+	{
+		err = process_vmasnap(skel_vmasnap);
+	}
+	else if (env.sysstat)
+	{
+		err = process_sysstat(skel_sysstat);
+	}
+	else if (env.memleak)
+	{
+		err = process_memleak(skel_memleak, env);
+	}
+	else if (env.oomkiller)  // 处理 oomkiller
+	{
+		err = process_oomkiller(skel_oomkiller);  // 使用处理 oom
 	}
 
     return 0;
@@ -1705,4 +1765,107 @@ drsnoop_cleanup:
     drsnoop_bpf__destroy(skel_drsnoop);
 
     return err < 0 ? -err : 0;
+}
+
+static int sort_column(const void *obj1, const void *obj2)
+{
+	struct slabrate_info *s1 = (struct slabrate_info *)obj1;
+	struct slabrate_info *s2 = (struct slabrate_info *)obj2;
+
+	return s2->size - s1->size;
+}
+
+static int print_stat(struct slabrate_bpf *obj)
+{
+	char *key, **prev_key = NULL;
+	static struct slabrate_info values[OUTPUT_ROWS_LIMIT];
+	int i, err = 0, rows = 0;
+	int fd = bpf_map__fd(obj->maps.slab_entries);
+
+	printf("%-32s %6s %10s\n", "CACHE", "ALLOCS", "BYTES");
+
+	while (1) {
+		err = bpf_map_get_next_key(fd, prev_key, &key);
+		if (err) {
+			if (errno == ENOENT) {
+				err = 0;
+				break;
+			}
+			return err;
+		}
+		err = bpf_map_lookup_elem(fd, &key, &values[rows++]);
+		if (err) {
+			return err;
+		}
+		prev_key = &key;
+	}
+
+	qsort(values, rows, sizeof(struct slabrate_info), sort_column);
+	rows = rows < output_rows ? rows : output_rows;
+	for (i = 0; i < rows; i++)
+		printf("%-32s %6lld %10lld\n",
+		       values[i].name, values[i].count, values[i].size);
+
+	printf("\n");
+	prev_key = NULL;
+
+	while (1) {
+		err = bpf_map_get_next_key(fd, prev_key, &key);
+		if (err) {
+			if (errno == ENOENT) {
+				err = 0;
+				break;
+			}
+			return err;
+		}
+		err = bpf_map_delete_elem(fd, &key);
+		if (err) {
+			return err;
+		}
+		prev_key = &key;
+	}
+	return err;
+}
+
+static int process_slabrate(struct slabrate_bpf *skel_slabrate) {
+	int err;
+
+	bpf_program__set_autoload(skel_slabrate->progs.kmem_cache_alloc, true);
+
+	skel_slabrate->rodata->target_pid = target_pid;
+
+	err = slabrate_bpf__load(skel_slabrate);
+    if (err) {
+        fprintf(stderr, "Failed to load and verify BPF skeleton\n");
+        return 1;
+    }
+
+    err = slabrate_bpf__attach(skel_slabrate);
+    if (err) {
+        fprintf(stderr, "Failed to attach BPF skeleton\n");
+        goto slabrate_cleanup;
+    }
+
+	while (1) {
+		sleep(1);
+
+		if (clear_screen) {
+			err = system("clear");
+			if (err)
+				goto slabrate_cleanup;
+		}
+
+		err = print_stat(skel_slabrate);
+		if (err)
+			goto slabrate_cleanup;
+
+		count--;
+		if (exiting || !count)
+			goto slabrate_cleanup;
+	}
+
+slabrate_cleanup:
+	slabrate_bpf__destroy(skel_slabrate);
+
+	return err != 0;
 }

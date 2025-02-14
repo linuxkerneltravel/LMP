@@ -9,6 +9,10 @@
 **eBPF 提供了一种高效的机制来监控和追踪系统级别的事件，包括内存的分配和释放。通过 eBPF，可以跟踪内存分配和释放的请求，并收集每次分配的调用堆栈。然后，分析这些信息，找出执行了内存分配但未执行释放操作的调用堆栈，这有助于程序员找出导致内存泄漏的源头。**
 
 ---
+## TODO list
+
+- [x] 监控SLAB分配器的内存使用情况
+- [ ] 跟踪共享内存的用量信息
 
 ## 背景意义
 
@@ -58,7 +62,7 @@
    make
    ```
    make后没有编译生成任何的二进制文件，只打印了logo，效果如下：
-   ![alt text](/docs/image/15.png)
+   ![alt text](../docs/image/15.png)
 
 打开makefile，检查makefile逻辑，代码如下：
 ```
@@ -82,7 +86,7 @@ else
 BZS_APPS := 
 ```
 再次执行make，发现报错为 "vmlinux.h file not find"，如下：
-   ![alt text](/docs/image/16.png)
+   ![alt text](../docs/image/16.png)
 
 执行以下命令,生成vmlinux.h文件
 ```
@@ -125,7 +129,7 @@ registry = "git://crates.rustcc.cn/crates.io-index"
 ```
    重新安装还是会报错：
 
-   ![alt text](/docs/image/17.png)
+   ![alt text](../docs/image/17.png)
 
    在 `~/.cargo/config` 文件中添加以下内容，即可解决：
    ```
@@ -133,7 +137,7 @@ registry = "git://crates.rustcc.cn/crates.io-index"
 git-fetch-with-cli = true
 ```
 再次make编译完成，生成二进制文件 mem_watcher，并能正常运行。
-   ![alt text](/docs/image/18.png)
+   ![alt text](../docs/image/18.png)
 
 # 工具的使用方法说明
 

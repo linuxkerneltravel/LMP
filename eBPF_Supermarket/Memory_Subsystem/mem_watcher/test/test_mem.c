@@ -19,11 +19,13 @@ static struct env {
     bool mem_leak;
     bool mem_unleak;
     bool mem_stress_test;
+    bool simulate_leak;
 } env = {
     .overall_leak_test = false,
     .mem_leak = false,
     .mem_unleak = false,
-    .mem_stress_test = false
+    .mem_stress_test = false,
+    .simulate_leak = false
 };
 
 static volatile bool running = true;  // 控制程序是否继续运行
@@ -36,6 +38,7 @@ static const struct argp_option opts[] = {
     { "detect-leak", 'l', NULL, 0, "Detect memory leaks", 3 },
     { "no-leak", 'n', NULL, 0, "No memory leaks expected", 3 },
     { "stress-test", 's', NULL, 0, "Perform memory stress test", 4 },
+    { "simulate-leak", 'm', NULL, 0, "Simulate memory leak with complex objects", 5 },
     { NULL, 'h', NULL, OPTION_HIDDEN, "show the full help", 0 },
     { NULL, 0, NULL, 0, NULL, 0 }
 };
@@ -56,6 +59,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
         case 's':
             env.mem_stress_test = true;
             break;
+        case 'm':
+            env.simulate_leak = true;
+            break;
         case 'h':
             argp_state_help(state, stderr, ARGP_HELP_STD_HELP);
             break;
@@ -63,6 +69,45 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
             return ARGP_ERR_UNKNOWN;
     }    
     return 0;
+}
+
+typedef struct {
+    int* data;
+} ComplexObject;
+
+ComplexObject* createComplexObject() {
+    ComplexObject* obj = (ComplexObject*)malloc(sizeof(ComplexObject));
+    if (obj != NULL) {
+        obj->data = (int*)malloc(1000 * sizeof(int));
+        if (obj->data != NULL) {
+            for (int i = 0; i < 1000; ++i) {
+                obj->data[i] = rand() % 100; // 填充数据
+            }
+            return obj;
+        } else {
+            free(obj);
+            return NULL;
+        }
+    } else {
+        return NULL;
+    }
+}
+
+void destroyComplexObject(ComplexObject* obj) {
+    if (obj != NULL) {
+        if (obj->data != NULL) {
+            free(obj->data);
+        }
+        free(obj);
+    }
+}
+
+void simulateMemoryLeak() {
+    // 动态分配一个复杂对象的数组
+    ComplexObject* objects[1000];
+    for (int i = 0; i < 1000; ++i) {
+        objects[i] = createComplexObject();
+    }
 }
 
 // 模拟一些处理，通过写入分配的内存
@@ -200,6 +245,13 @@ int main(int argc, char **argv) {
         if (env.mem_unleak) {
             printf("正在进行无内存泄漏测试...\n");
             mem_unleak_process();
+        }
+    }
+
+    if (env.simulate_leak) {
+        // 模拟复杂对象内存泄漏
+        for (int i = 0; i < 1000; ++i) {
+            simulateMemoryLeak();
         }
     }
 

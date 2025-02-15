@@ -16,6 +16,7 @@
 #include <linux/fs.h>
 #include <errno.h>
 #include <fcntl.h>  // 包含文件打开标志宏
+#include <sys/stat.h>
 #include <argp.h>
 #include "fs/fs_watcher/open.skel.h"
 #include "fs/fs_watcher/read.skel.h"
@@ -26,7 +27,7 @@
 #include "fs_watcher/include/fs_watcher.h"
 
 const char argp_program_doc[] = "fs_watcher is used to monitor various system calls and disk I/O events.\n\n"
-           "Usage: fs_watcher [OPTION...]\n\n"
+           "Usage: fs_watcher [OPTION...]\n"
            "Options:";
 
 #define PROCESS_SKEL(skel, func) \
@@ -107,6 +108,9 @@ static struct env{
     bool disk_io_visit;
     bool block_rq_issue;
     bool CacheTrack;
+    bool print_logo;
+    char *filename; //保存用户输入的用户名
+    int  pid;       // 保存用户输入的PID
 }env = {
     .open = false,
     .read = false,
@@ -114,15 +118,25 @@ static struct env{
     .disk_io_visit = false,
     .block_rq_issue = false,
     .CacheTrack = false,
+    .print_logo = false,
+    .filename = NULL, // 默认没有文件名
+    .pid = -1,       // 默认没有PID
 };
 
 static const struct argp_option opts[] = {
-    {"open", 'o', 0, 0, "Print open system call report"},
-    {"read", 'r', 0, 0, "Print read system call report"},
+    { 0, 0, 0, 0, "文件系统:", 1},
+    {"open", 'o', 0, 0, "Track file open, capturing fd, filename, and ret"},
+    {"read", 'r', 0, 0, "Track file read operations"},
     {"write", 'w', 0, 0, "Print write system call report"},
+    { 0, 0, 0, 0, "磁盘系统:", 2 },
     {"disk_io_visit", 'd', 0, 0, "Print disk I/O visit report"},
     {"block_rq_issue", 'b', 0, 0, "Print block I/O request submission events. Reports when block I/O requests are submitted to device drivers."},
+    { 0, 0, 0, 0, "脏页回写:", 3},
     {"CacheTrack", 't' , 0 ,0 , "WriteBack dirty lagency and other information"},
+    { "help", 'h', 0, 0, "        (帮助信息)" },
+    { 0, 0, 0, 0, "参数说明:", 4},
+    { "PID", 'p', "PID", 0, "(根据PID查找)"},
+    {"filename", 'n', "FILENAME", 0, "(根据文件名查找)"},
     {0} // 结束标记，用于指示选项列表的结束
 };
 
@@ -141,10 +155,29 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state) {
         env.block_rq_issue = true;break;
         case 't':
         env.CacheTrack = true;break;
+        case 'h':
+		env.print_logo = true;break;
+        case 'n': // 处理 -n 或 --filename 选项
+            env.filename = arg; // 保存文件名
+            break;
+        case 'p':  // 处理PID
+            env.pid = atoi(arg);  // 将字符串转为整数
+            break;
         default: 
             return ARGP_ERR_UNKNOWN;
     }
     return 0;
+}
+
+// 打印logo函数
+void print_fs_watcher_logo() {
+    // 每行文字的颜色控制应该不会干扰文本对齐
+    printf("\033[38;5;208m    ___________    _       _____  ______________  ____________   \n");
+    printf("\033[38;5;148m   / ____/ ___/   | |     / /   |/_  __/ ____/ / / / ____/ __ \\  \n");
+    printf("\033[38;5;69m  / /_    \\__\\    | | /| / / /| | / / / /   / /_/ / __/ / /_/ /  \n");
+    printf("\033[38;5;93m / __/  ___/ /    | |/ |/ / ___ |/ / / /___/ __  / /___/ _, _/   \n");
+    printf("\033[38;5;33m/_/    /____/     |__/|__/_/  |_/_/  \\____/_/ /_/_____/_/ |_|   \n");
+    printf("\033[0m\n");
 }
 
 static const struct argp argp = {
@@ -183,8 +216,6 @@ static int process_disk_io_visit(struct disk_io_visit_bpf *skel_disk_io_visit);
 static int process_block_rq_issue(struct block_rq_issue_bpf *skel_block_rq_issue);
 static int process_CacheTrack(struct CacheTrack_bpf *skel_CacheTrack);
 
-
-
 int main(int argc,char **argv){
 
     int err;
@@ -207,11 +238,28 @@ int main(int argc,char **argv){
 	signal(SIGTERM, sig_handler);
     signal(SIGALRM, sig_handler);
 
-
-    err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
+    err = argp_parse(&argp, argc, argv, 0, 0, NULL);
     //   printf("success!\n");
     if (err)
         return err;
+
+	// Print logo if requested
+	if (env.print_logo) {
+		print_fs_watcher_logo();
+		// Print options and doc
+		printf("%s\n", argp.doc);
+		for (int i = 0; opts[i].name || opts[i].doc; i++) {
+			if (!opts[i].name) {
+				// 如果name为空，表示是分组标题，直接打印文档字段
+				printf("\n%s\n", opts[i].doc);
+			} else {
+				// 否则打印选项
+				printf("  -%c, --%s\t%s\n", opts[i].key, opts[i].name, opts[i].doc);
+			}
+		}
+		printf("\n");
+		return 0;
+	}
 
     if(env.open){
         PROCESS_SKEL(skel_open,open);
@@ -267,16 +315,31 @@ const char* flags_to_str(int flags) {
     return str;
 }
 
+static const char *file_type_to_str(unsigned short file_type)
+{
+    switch (file_type) {
+        case 0100000: return "Regular File";    // S_IFREG
+        case 0040000: return "Directory";       // S_IFDIR
+        case 0020000: return "Character Device"; // S_IFCHR
+        case 0060000: return "Block Device";     // S_IFBLK
+        case 0120000: return "Symbolic Link";    // S_IFLNK
+        case 0010000: return "FIFO";            // S_IFIFO
+        case 0140000: return "Socket";          // S_IFSOCK
+        default: return "Unknown";              // Default case
+    }
+}
+
 static int handle_event_open(void *ctx, void *data, size_t data_sz)
 {
     const struct event_open *e = data;
-	struct tm *tm;
-	char ts[32];
-	time_t t;
+    struct tm *tm;
+    char ts[32];
+    time_t t;
 
-	time(&t);
-	tm = localtime(&t);
-	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+    time(&t);
+    tm = localtime(&t);
+    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+
     const char *ret_str;
     // 如果返回值是负数，则是错误码，使用 strerror
     if (e->ret < 0) {
@@ -288,11 +351,21 @@ static int handle_event_open(void *ctx, void *data, size_t data_sz)
 
     const char *flags_str = flags_to_str(e->flags);
 
-    printf("%-8s %-8d %-8d %-100s %-8s %-8d %-8s %-8s\n", 
-           ts, e->dfd, e->pid,e->filename, flags_str, e->fd, ret_str, e->is_created ? "true" : "false");
-	return 0;
-}
+    //进行PID和文件名过滤
+    if ((env.pid != -1 && env.pid != e->pid) || 
+        (env.filename != NULL && strstr(e->filename, env.filename) == NULL)) {
+        return 0;  // 如果不匹配PID或文件名，则跳过此事件
+    }
 
+    // 判断 dfd 是否是 AT_FDCWD（即当前工作目录）
+    const char *dfd_str = (e->dfd == -100) ? "Current Dir" : "Other Dir";
+
+    //打印过滤后的结果
+    printf("%-8s %-15s %-8d %-20s %-8s %-8d %-8s\n", 
+           ts, dfd_str, e->pid, e->filename, flags_str, e->fd, ret_str);
+
+    return 0;
+}
 
 static int handle_event_read(void *ctx, void *data, size_t data_sz)
 {
@@ -304,8 +377,14 @@ static int handle_event_read(void *ctx, void *data, size_t data_sz)
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+    
+    //进行PID和文件名过滤
+    if ((env.pid != -1 && env.pid != e->pid) || 
+        (env.filename != NULL && strstr(e->filename, env.filename) == NULL)) {
+        return 0;  // 如果不匹配PID或文件名，则跳过此事件
+    }
 
-	printf("%-10s %-8d %-8llu\n",ts,e->pid,e->duration_ns);
+	printf("%-10s %-8d %-15s %-10zu %-20s\n",ts,e->pid,e->filename,e->count_size,file_type_to_str(e->file_type));
 	return 0;
 }
 
@@ -365,8 +444,7 @@ static int process_open(struct open_bpf *skel_open){
     struct ring_buffer *rb;
 
     LOAD_AND_ATTACH_SKELETON_MAP(skel_open,open);
-
-    printf("%-8s %-8s %-8s %-100s %-8s %-8s %-8s %-8s\n", "TIME","dfd","PID", "filename", "flags", "fd", "ret", "is_created");
+    printf("%-8s %-15s %-8s %-20s %-8s %-8s %-8s\n", "TIME", "DFD", "PID", "FILENAME", "FLAGS", "FD", "RET");
     POLL_RING_BUFFER(rb, 1000, err);
 
 open_cleanup:
@@ -382,7 +460,7 @@ static int process_read(struct read_bpf *skel_read){
 
     LOAD_AND_ATTACH_SKELETON(skel_read,read);
 
-    printf("%-10s %-8s %-8s\n","TIME","PID","DS");
+    printf("%-10s %-8s %-15s %-10s %-20s\n","TIME","PID","FILENAME","SIZE","FILE_TYPE");
     POLL_RING_BUFFER(rb, 1000, err);
 
 read_cleanup:

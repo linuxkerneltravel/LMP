@@ -3,7 +3,6 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "fs_watcher.h"
-#define MAX_FILENAME_LEN 256
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -21,7 +20,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
 	__type(key, pid_t);
-	__type(value, MAX_FILENAME_LEN);
+	__type(value, struct event_read);
 } data SEC(".maps");
 
 struct {
@@ -29,22 +28,15 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
 
-const volatile unsigned long long min_duration_ns = 0;
-
 SEC("kprobe/vfs_read")
 int kprobe_enter_read(struct pt_regs *ctx)
 {
-	struct file *filp = (struct file *)PT_REGS_PARM1(ctx);  
-	pid_t pid;
-	struct event_read *e;
-	u64 ts;
-	char buf[256];
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns()/1000;
-	int count_size = PT_REGS_RC(ctx);
-	if (min_duration_ns)
-		return 0;
-    
+	struct event_read e = {};
+	struct file *filp = (struct file *)PT_REGS_PARM1(ctx);
+	pid_t pid = bpf_get_current_pid_tgid() >> 32;
+	e.pid = pid; //获取进程pid
+	size_t count = (size_t)PT_REGS_PARM3(ctx);               // 获取请求读取的字节数
+
 	//获取文件路径结构体
 	struct dentry *dentry = BPF_CORE_READ(filp, f_path.dentry);
 	if(!dentry){
@@ -52,48 +44,40 @@ int kprobe_enter_read(struct pt_regs *ctx)
 		return 0;
 	}
 	struct qstr d_name = BPF_CORE_READ(dentry,d_name);
-
-	//读文件名称到缓冲区
-	int ret = bpf_probe_read_kernel(buf, sizeof(buf), d_name.name);
-	if(ret != 0){
-		bpf_printk("failed to read file name\n");
-	}
+	bpf_probe_read_str(e.filename, sizeof(e.filename), d_name.name);  // 读取文件名
 	// 判断文件类型，并过滤掉设备文件
     unsigned short file_type = BPF_CORE_READ(dentry, d_inode, i_mode) & S_IFMT;
-	bpf_map_update_elem(&data, &pid, &buf, BPF_ANY);
-	 switch (file_type) {
-		case S_IFREG:
-            bpf_printk("Regular file name: %s,count_size :%d", buf,count_size);
-            break;
-		case S_IFCHR:
-            bpf_printk("Regular file name: %s,count_size :%d", buf,count_size);
-            break;
-        case S_IFDIR:
-           bpf_printk("Regular file name: %s,count_size :%d", buf,count_size);
-            break;
-        case S_IFLNK:
-           bpf_printk("Regular file name: %s,count_size :%d", buf,count_size);
-            break;
-        case S_IFBLK:
-            bpf_printk("Regular file name: %s,count_size :%d", buf,count_size);
-            break;
-        case S_IFIFO:
-           bpf_printk("Regular file name: %s,count_size :%d", buf,count_size);
-            break;
-        case S_IFSOCK:
-            bpf_printk("Regular file name: %s,count_size :%d", buf,count_size);
-            break;
-		default:
-			bpf_printk("other!!!");
-			break;
-	 }
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
+	e.file_type = file_type;
+	bpf_map_update_elem(&data,&pid,&e,BPF_ANY);
+    return 0;
+}
+
+SEC("kretprobe/vfs_read")
+int kretprobe_exit_read(struct pt_regs *ctx)
+{
+    pid_t pid = bpf_get_current_pid_tgid() >> 32;
+    ssize_t real_count = PT_REGS_RC(ctx);  // 获取实际返回的字节数
+	struct event_read *e = bpf_map_lookup_elem(&data, &pid);
+	if(!e){
+		bpf_printk("Failed to found read event\n");
 		return 0;
-	e->pid = pid;
-	e->duration_ns = ts;
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
+	}
+	e->count_size = real_count;
+
+	// 使用 ring buffer 向用户态传递数据
+	struct event_read *e_ring = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+	if (!e_ring) {
+		return 0;  // 如果 ring buffer 没有足够空间，直接返回
+	}
+
+	// 将数据填充到 ring buffer 中
+	*e_ring = *e;
+
+	// 提交数据到 ring buffer
+	bpf_ringbuf_submit(e_ring, 0);
+
+	// 删除哈希表中的该事件数据，避免泄露
+	bpf_map_delete_elem(&data, &pid);
+	
 	return 0;
 }

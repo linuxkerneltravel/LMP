@@ -13,7 +13,7 @@ require (
 	github.com/go-openapi/swag v0.22.0 // indirect
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/go-sql-driver/mysql v1.6.0
-	github.com/golang-jwt/jwt/v4 v4.3.0
+	github.com/golang-jwt/jwt/v4 v4.5.1
 	github.com/gookit/color v1.3.6
 	github.com/gorilla/websocket v1.4.2
 	github.com/kr/pretty v0.3.0 // indirect
